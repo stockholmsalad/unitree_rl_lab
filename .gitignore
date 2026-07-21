@@ -73,3 +73,6 @@ datasets
 
 # Mimic
 *.npz
+
+unitree_ros/
+unitree_model/
