@@ -20,7 +20,7 @@ from unitree_rl_lab.assets.robots import unitree_actuators
 
 # modified
 _ROOT = pathlib.Path(__file__).resolve().parents[4]
-UNITREE_MODEL_DIR = os.environ.get("UNITREE_MODEL_DIR", str(_ROOT / "unitree_mosel"))
+UNITREE_MODEL_DIR = os.environ.get("UNITREE_MODEL_DIR", str(_ROOT / "unitree_model"))
 UNITREE_ROS_DIR = os.environ.get("UNITREE_ROS_DIR", str(_ROOT / "unitree_ros"))
 
 # original
