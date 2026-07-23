@@ -1,0 +1,23 @@
+{
+  "hostname": "9960x",
+  "python": "3.11.15",
+  "isaaclab": "0.54.4",
+  "isaaclab_rl": "0.5.2",
+  "isaaclab_tasks": "0.11.16",
+  "rsl_rl_lib": "5.0.1",
+  "torch": "2.7.0+cu128",
+  "isaaclab_version": "2.3.2",
+  "isaaclab_commit": "858234d06e",
+  "isaaclab_path": "/home/taehyeong_pilab/IsaacLab",
+  "repo_commit": "3a3acb6",
+  "repo_dirty": "yes",
+  "unitree_model_dir": "/home/taehyeong_pilab/workspaces/unitree_model [env, OK]",
+  "unitree_ros_dir": "/home/taehyeong_pilab/workspaces/unitree_ros [env, OK]",
+  "cuda_runtime": "12.8",
+  "cudnn_version": "92000",
+  "gpu_name": "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+  "gpu_capability": "sm_120",
+  "gpu_memory_mb": "97239",
+  "cudnn_gru_ok": "ok",
+  "alloc_conf": "<unset>"
+}
