@@ -33,6 +33,11 @@ class PCModelCfg(RslRlRNNModelCfg):
     # 표현 헤드(z_e 에만, 교체 지점): "none" | "recon"(Head A) | "jepa"(Head B). actor 만 설정.
     repr_head: str = "none"
     recon_hidden_dim: int = 128
+    # Head B VICReg projector(expander): 정규화를 z_e 대신 projector 출력에 걸어 z_e 백화 방지.
+    # use_projector=False 면 구 동작(VICReg 을 z_e 에 직접) — projector 효과 ablation 용.
+    use_projector: bool = True
+    proj_hidden_dim: int = 128
+    proj_dim: int = 128
 
 
 @configclass

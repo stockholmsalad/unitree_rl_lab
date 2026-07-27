@@ -68,9 +68,13 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
         self._var_gamma = float(train_cfg.get("var_gamma", 1.0))
         if hasattr(actor, "jepa_predictor"):
             self._jepa_params = list(actor.pc_encoder.parameters()) + list(actor.jepa_predictor.parameters())
+            # projector 도 jepa optimizer 가 함께 학습(VICReg 이 이 출력에 걸리므로).
+            _use_proj = getattr(actor, "use_projector", False)
+            if _use_proj:
+                self._jepa_params += list(actor.vic_projector.parameters())
             self._jepa_optimizer: torch.optim.Optimizer | None = torch.optim.Adam(self._jepa_params, lr=jepa_lr)
             print(f"[JELoco] Head B JEPA ON (lambda={self._lambda_jepa}, k={self._jepa_k}, "
-                  f"tau={self._ema_tau}, chunks={self._jepa_chunks}, lr={jepa_lr})")
+                  f"tau={self._ema_tau}, chunks={self._jepa_chunks}, lr={jepa_lr}, projector={_use_proj})")
         else:
             self._jepa_params = []
             self._jepa_optimizer = None
@@ -142,18 +146,22 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
             pred = actor.jepa_predict(z_e[valid_t], z_p[valid_t])                   # (nt, Nc, 64)
             loss_j = F.mse_loss(pred, z_e_tgt[valid_t + k])
 
-            # VICReg (online z_e): 분산 hinge + 공분산 off-diag
+            # VICReg — z_e 가 아니라 projector(z_e) 출력에 부과(SSL 표준). z_e 백화 방지.
+            # projector 없으면(ablation) h=z_e 로 구 동작. 분산 hinge + 공분산 off-diag.
             zf = z_e.reshape(-1, z_e.shape[-1])
-            std = torch.sqrt(zf.var(dim=0) + 1e-4)
+            h = actor.vic_project(zf)
+            std = torch.sqrt(h.var(dim=0) + 1e-4)
             loss_var = torch.relu(self._var_gamma - std).mean()
-            zc = zf - zf.mean(dim=0, keepdim=True)
-            cov = (zc.T @ zc) / (zf.shape[0] - 1)
+            hc = h - h.mean(dim=0, keepdim=True)
+            cov = (hc.T @ hc) / (h.shape[0] - 1)
             off = cov - torch.diag(torch.diagonal(cov))
-            loss_cov = off.pow(2).sum() / zf.shape[-1]
+            loss_cov = off.pow(2).sum() / h.shape[-1]
 
             ((self._lambda_jepa * loss_j + self._lambda_var * loss_var
               + self._lambda_cov * loss_cov) / len(chunks)).backward()
-            tot_j += loss_j.item(); tot_vc += (loss_var + loss_cov).item(); z_std += std.mean().item()
+            tot_j += loss_j.item(); tot_vc += (loss_var + loss_cov).item()
+            # z_e_std 는 raw z_e 의 std(드리프트 진단용) — projection std 아님.
+            z_std += torch.sqrt(zf.var(dim=0) + 1e-4).mean().item()
 
         torch.nn.utils.clip_grad_norm_(self._jepa_params, self.alg.max_grad_norm)
         self._jepa_optimizer.step()

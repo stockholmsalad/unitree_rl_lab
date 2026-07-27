@@ -67,6 +67,9 @@ class PointCloudRNNModel(RNNModel):
         repr_head: str = "none",
         recon_hidden_dim: int = 128,
         height_map_group: str = "height_map",
+        use_projector: bool = True,
+        proj_hidden_dim: int = 128,
+        proj_dim: int = 128,
         **kwargs,
     ) -> None:
         # _get_obs_dim(super 초기화 중 호출)이 참조 → super 전에 세팅
@@ -113,6 +116,17 @@ class PointCloudRNNModel(RNNModel):
             self.target_pc_encoder = copy.deepcopy(self.pc_encoder)   # EMA target + stop-grad
             for p in self.target_pc_encoder.parameters():
                 p.requires_grad_(False)
+            # VICReg projector(expander) — anti-collapse 정규화를 z_e 가 아니라 이 출력에 건다.
+            # 이유(2026-07 진단): VICReg 을 z_e 에 직접 걸면 z_e 를 등방·std=1 로 백화 → 시간 구조 파괴
+            # (1스텝에 79% 탈상관) + 정책 입력 스케일이 학습 중 70배 드리프트. SSL 표준(VICReg/BYOL)은
+            # projection 위에 정규화를 걸어 표현 z_e 를 자유롭게 둔다. z_e 붕괴는 projector 역전파로
+            # 여전히 방지된다(z_e→상수면 proj 도 상수→VICReg 위반). use_projector=False 로 ablation.
+            self.use_projector = use_projector
+            if use_projector:
+                self.vic_projector = nn.Sequential(
+                    nn.Linear(pc_out_dim, proj_hidden_dim), nn.ELU(),
+                    nn.Linear(proj_hidden_dim, proj_dim),
+                )
 
     # ── rsl_rl 확장점 ────────────────────────────────────────────────────────
     def _get_obs_dim(self, obs, obs_groups, obs_set):
@@ -171,6 +185,10 @@ class PointCloudRNNModel(RNNModel):
     def jepa_predict(self, z_e_t: torch.Tensor, z_p_t: torch.Tensor) -> torch.Tensor:
         """[z_e(t), z_p(t)] → ẑ_e(t+k). z_p 는 runner 에서 detach 해 넘김(z_e 만 shaping)."""
         return self.jepa_predictor(torch.cat([z_e_t, z_p_t], dim=-1))
+
+    def vic_project(self, z_e: torch.Tensor) -> torch.Tensor:
+        """VICReg 정규화 대상 = projector(z_e). use_projector=False 면 z_e 그대로(구 동작)."""
+        return self.vic_projector(z_e) if getattr(self, "use_projector", False) else z_e
 
     @torch.no_grad()
     def target_encode(self, pc_obs: torch.Tensor) -> torch.Tensor:

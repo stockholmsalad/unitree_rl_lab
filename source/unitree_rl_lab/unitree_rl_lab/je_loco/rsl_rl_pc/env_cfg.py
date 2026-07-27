@@ -9,6 +9,7 @@ scene: 표준 velocity 씬 + pc_scanner RayCaster(12×8=96 격자). rsl_rl OnPol
 from __future__ import annotations
 
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -184,7 +185,16 @@ class JELocoPCEnvCfg(RobotEnvCfg):
             ),
         }
 
-        # 최저 난이도(difficulty 0)에서 스폰 → 시작 시 계단/박스 2.5cm. 커리큘럼이 성공 시 올림.
+        # ── 개방루프 커리큘럼 (헤드/seed 간 훈련 지형 분포 통제) ──
+        # 표준 terrain_levels_vel 은 성능 의존이라 A/B·seed 마다 훈련 지형이 달라진다(내생적 교란).
+        # 실측(2026-07): Head B 는 seed 별로 커리큘럼을 0(실패)~5.0(정상) 로 요동 → A/B 비교 불가.
+        # scripted_terrain_levels 로 교체: 난이도 상한을 iteration 함수로 고정 → 모든 run 동일 분포.
+        # steps_per_iter 는 agent_cfg 의 num_steps_per_env(=32) 와 반드시 일치.
+        self.curriculum.terrain_levels = CurrTerm(
+            func=mdp.scripted_terrain_levels,
+            params={"steps_per_iter": 32},
+        )
+        # scripted 는 매 reset 시 [0, C(t)] 로 직접 배정하므로 max_init_terrain_level 은 무의미.
         self.scene.terrain.max_init_terrain_level = 0
 
         # ── 전진 명령 (stair 방식: 항상 ≥0.1 전진, 제자리·회전 없음) ──
