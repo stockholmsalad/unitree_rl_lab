@@ -9,23 +9,32 @@
 class FSMState : public BaseState
 {
 public:
-    FSMState(int state, std::string state_string) 
-    : BaseState(state, state_string) 
+    FSMState(int state, std::string state_string)
+    : BaseState(state, state_string)
     {
         spdlog::info("Initializing State_{} ...", state_string);
 
+        // ---------------------------------------------------------
+        // Joystick FSM transitions
+        // ---------------------------------------------------------
         auto transitions = param::config["FSM"][state_string]["transitions"];
 
-        if(transitions)
+        if (transitions)
         {
-            auto transition_map = transitions.as<std::map<std::string, std::string>>();
+            auto transition_map =
+                transitions.as<std::map<std::string, std::string>>();
 
-            for(auto it = transition_map.begin(); it != transition_map.end(); ++it)
+            for (auto it = transition_map.begin();
+                it != transition_map.end(); ++it)
             {
                 std::string target_fsm = it->first;
-                if(!FSMStringMap.right.count(target_fsm))
+
+                if (!FSMStringMap.right.count(target_fsm))
                 {
-                    spdlog::warn("FSM State_'{}' not found in FSMStringMap!", target_fsm);
+                    spdlog::warn(
+                        "FSM State_'{}' not found in FSMStringMap!",
+                        target_fsm
+                    );
                     continue;
                 }
 
@@ -35,19 +44,68 @@ public:
                 unitree::common::dsl::Parser p(condition);
                 auto ast = p.Parse();
                 auto func = unitree::common::dsl::Compile(*ast);
+
                 registered_checks.emplace_back(
                     std::make_pair(
-                        [func]()->bool{ return func(FSMState::lowstate->joystick); },
+                        [func]() -> bool
+                        {
+                            return func(FSMState::lowstate->joystick);
+                        },
                         fsm_id
                     )
                 );
             }
         }
 
-        // register for all states
+        // ---------------------------------------------------------
+        // Keyboard FSM transitions
+        // ---------------------------------------------------------
+        auto keyboard_transitions =
+            param::config["FSM"][state_string]["keyboard_transitions"];
+
+        if (keyboard_transitions)
+        {
+            auto transition_map =
+                keyboard_transitions.as<std::map<std::string, std::string>>();
+
+            for (auto it = transition_map.begin();
+                it != transition_map.end(); ++it)
+            {
+                std::string target_fsm = it->first;
+                std::string target_key = it->second;
+
+                if (!FSMStringMap.right.count(target_fsm))
+                {
+                    spdlog::warn(
+                        "FSM State_'{}' not found in FSMStringMap!",
+                        target_fsm
+                    );
+                    continue;
+                }
+
+                int fsm_id = FSMStringMap.right.at(target_fsm);
+
+                registered_checks.emplace_back(
+                    std::make_pair(
+                        [target_key]() -> bool
+                        {
+                            return FSMState::keyboard &&
+                                FSMState::keyboard->on_pressed &&
+                                FSMState::keyboard->key() == target_key;
+                        },
+                        fsm_id
+                    )
+                );
+            }
+        }
+
+        // Register timeout protection for all states
         registered_checks.emplace_back(
             std::make_pair(
-                []()->bool{ return lowstate->isTimeout(); },
+                []() -> bool
+                {
+                    return lowstate->isTimeout();
+                },
                 FSMStringMap.right.at("Passive")
             )
         );

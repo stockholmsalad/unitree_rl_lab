@@ -5,7 +5,7 @@
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
-std::shared_ptr<Keyboard> FSMState::keyboard = nullptr;
+std::shared_ptr<Keyboard> FSMState::keyboard = std::make_shared<Keyboard>(); //add
 
 void init_fsm_state()
 {
@@ -41,9 +41,11 @@ int main(int argc, char** argv)
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Press [L2 + A] to enter FixStand mode.\n";
-    std::cout << "And then press [Start] to start controlling the robot.\n";
-
+    std::cout << "FixStand: [L2 + A] or keyboard [2]\n"; //add
+    std::cout << "Velocity: [Start] or keyboard [3]\n"; //add
+    std::cout << "Passive: [L2 + B] or keyboard [1]\n"; //add
+    std::cout << "Move: W/S forward-back, A/D left-right, Q/E yaw\n"; //add
+    
     while (true)
     {
         sleep(1);
