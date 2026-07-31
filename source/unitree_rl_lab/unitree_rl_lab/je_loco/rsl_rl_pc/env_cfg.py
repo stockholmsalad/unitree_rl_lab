@@ -3,7 +3,7 @@
 """JE-Loco point cloud 속도추종 env — 검증된 Go2 velocity 위에 pointcloud 관측 그룹 추가.
 
 관측 그룹: policy(45, actor) / pointcloud(96×3=288) / critic(60, privileged, base_lin_vel 포함).
-scene: 표준 velocity 씬 + pc_scanner RayCaster(12×8=96 격자). rsl_rl OnPolicyRunner 로 학습.
+scene: 표준 velocity 씬 + pc_scanner 전방 프러스텀(192점) + height_scanner 전방정렬 격자(16×9=144, Head A GT).
 """
 
 from __future__ import annotations
@@ -48,12 +48,17 @@ class PCSceneCfg(RobotSceneCfg):
         mesh_prim_paths=["/World/ground"],
     )
 
-    # (2) Head A 재구성 GT — top-down 격자(12×8=96, base 중심). 정책 입력 아님.
+    # (2) Head A 재구성 GT — top-down 격자를 **카메라 전방 footprint 에 정렬**(16×9=144).
+    # 이전(2026-07 이전): base 중심 x∈[−0.55,0.55] → pc_scanner 시야(x∈[0.5,2.3])와 8셀만 겹침.
+    # = Head A 가 관측 불가능한 지형(타깃의 ~92%)을 재구성하도록 학습 → baseline crippling.
+    # 정렬: 중심을 base 앞 1.25m 로 이동, x∈[0.5,2.0]·y∈[−0.4,0.4] → 전부 카메라 시야 안.
+    # (검증: height_scan = sensor_z − hit_z − offset 은 z 만 쓰므로 xy 이동이 높이값 안 깨뜨림.
+    #  recon_decoder 출력차원은 model.py 가 height_map dim=144 로 자동 조정.)
     height_scanner = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        offset=RayCasterCfg.OffsetCfg(pos=(1.25, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.1, 0.7], ordering="yx"),
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.5, 0.8], ordering="yx"),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
@@ -61,7 +66,7 @@ class PCSceneCfg(RobotSceneCfg):
 
 @configclass
 class PCObservationsCfg(ObservationsCfg):
-    """표준 policy(45)/critic(60) + pointcloud(288, 정책입력) + height_map(96, GT 재구성 타깃)."""
+    """표준 policy(45)/critic(60) + pointcloud(576, 정책입력) + height_map(144, GT 재구성 타깃)."""
 
     @configclass
     class PointCloudCfg(ObsGroup):
@@ -78,11 +83,11 @@ class PCObservationsCfg(ObservationsCfg):
 
     @configclass
     class HeightMapCfg(ObsGroup):
-        """Head A 재구성 타깃 — pc_scanner 격자의 **clean** height map(96). 정책 입력 아님.
+        """Head A 재구성 타깃 — 카메라 전방 footprint 에 정렬된 **clean** height map(144). 정책 입력 아님.
 
         노이즈 있는 pointcloud(정책 입력)로부터 이 clean height map 을 복원하도록 z_e 를 학습
-        → graceful degradation(depth 결손에도 지형 표현 유지)의 기반. offset=20 은 센서 mount
-        offset(z=20) 상쇄 → base 기준 지형 높이.
+        → graceful degradation(depth 결손에도 지형 표현 유지)의 기반. 타깃 격자는 height_scanner
+        정의(전방 x∈[0.5,2.0]·y∈[−0.4,0.4], 16×9)를 따름 — pc_scanner 시야 안이라 재구성 가능.
         """
 
         # offset=0: raycaster pos_w 가 base(~0.35) 를 보고하므로 height = base_z − terrain_z
