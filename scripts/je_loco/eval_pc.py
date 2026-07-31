@@ -27,7 +27,7 @@ parser.add_argument("--steps", type=int, default=1300, help="레벨당 측정 �
 parser.add_argument("--warmup", type=int, default=120, help="레벨 전환 후 측정 전 안정화 스텝")
 parser.add_argument("--dropout_levels", type=str, default="0.0", help="쉼표구분 결손 레벨 (예: 0,0.2,0.4,0.6,0.8,1.0)")
 parser.add_argument("--degradation", type=str, default="dropout", choices=["dropout", "hole", "occlusion"],
-                    help="결손 종류: dropout(i.i.d 점) · hole(블록) · occlusion(하단 대역)")
+                    help="결손 종류: dropout(i.i.d 점) · hole(블록) · occlusion(하단 대역). valid 채널 0=마스킹")
 parser.add_argument("--fix_terrain", action="store_true", default=True,
                     help="eval 중 terrain 커리큘럼 정지 → 지형 분포 고정(공정 비교, 논문용 기본 on)")
 parser.add_argument("--no_fix_terrain", dest="fix_terrain", action="store_false",
@@ -127,9 +127,10 @@ def main():
     robot = uenv.scene["robot"]
 
     deg = args_cli.degradation
-    degrade_fn = DEGRADATIONS[deg]
+    degrade_fn = DEGRADATIONS[deg]                          # 마스킹: valid 채널 0 (좌표 무주입)
     levels = [float(x) for x in args_cli.dropout_levels.split(",")]
-    print(f"[eval] {deg} 스윕: {levels}  ({uenv.num_envs} envs × {args_cli.steps} steps/level)")
+    print(f"[eval] {deg} 스윕 (마스킹): {levels}  "
+          f"({uenv.num_envs} envs × {args_cli.steps} steps/level)")
     rows = []
     for lv in levels:
         r = run_level(env, uenv, policy, robot, uenv.device, lv, degrade_fn)

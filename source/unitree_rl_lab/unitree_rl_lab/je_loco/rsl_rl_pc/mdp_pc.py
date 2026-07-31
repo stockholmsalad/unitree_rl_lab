@@ -31,9 +31,10 @@ def raycaster_pointcloud(
     robot = env.scene["robot"]
 
     hits_w = sensor.data.ray_hits_w.clone().float()                # (N, P, 3) world
+    valid = torch.isfinite(hits_w).all(dim=-1)                     # (N, P) 유효 hit
+    # 무효 hit 은 센서 위치로 채워 transform 을 유한하게 유지(어차피 valid=0 이라 max-pool 제외됨).
     sensor_pos_w = sensor.data.pos_w.unsqueeze(1).expand_as(hits_w)
-    invalid = ~torch.isfinite(hits_w).all(dim=-1, keepdim=True)
-    hits_w = torch.where(invalid, sensor_pos_w, hits_w)            # 무효 hit → 센서 위치
+    hits_w = torch.where(valid.unsqueeze(-1), hits_w, sensor_pos_w)
 
     n_envs, num_points, _ = hits_w.shape
     base_pos_w = robot.data.root_pos_w
@@ -43,7 +44,10 @@ def raycaster_pointcloud(
         base_quat_w.unsqueeze(1).expand(-1, num_points, -1).reshape(n_envs * num_points, 4),
         hits_rel.reshape(n_envs * num_points, 3),
     ).reshape(n_envs, num_points, 3)
-    return hits_b.reshape(n_envs, num_points * 3)
+    # 각 점에 valid 채널 부착 → (N, P, 4) = [x,y,z,valid]. 인코더가 valid=0 을 max-pool 에서 제외.
+    # 학습 시 무효 hit 도 valid=0 → eval 결손(valid=0)과 의미 일치(train/eval consistent).
+    out = torch.cat([hits_b, valid.float().unsqueeze(-1)], dim=-1)  # (N, P, 4)
+    return out.reshape(n_envs, num_points * 4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,66 +100,66 @@ class FrustumPatternCfg(PatternBaseCfg):
 #   occlusion  = 하단 대역 통째 가림 (최대 구조)         ← 다리/장애물이 근거리 시야 차단
 # frustum 격자 = pitch 12행(상→하) × yaw 16열(좌→우), row-major (frustum_camera_pattern 순서와 일치).
 # ─────────────────────────────────────────────────────────────────────────────
-_HOLE_VALUE = (0.325, 0.0, 0.045)
 _FRUSTUM_H = 12   # FrustumPatternCfg.height (pitch 행)
 _FRUSTUM_W = 16   # FrustumPatternCfg.width  (yaw 열)
 
+# 결손 = valid 채널(각 점의 4번째)만 0 으로 → 인코더 max-pool 에서 제외. 좌표는 안 건드림.
+# (측정 ④ 2026-07-31: sentinel 좌표 주입은 max-pool hijack 아티팩트를 만듦. mount↔origin 반전으로
+#  방법론 실패 확정. 진짜 마스킹 = 어떤 좌표도 주입 안 함.)
+
+
+def _drop_mask(pc_flat: torch.Tensor, drop: torch.Tensor) -> torch.Tensor:
+    """(N, P*4) point cloud 에서 drop(N,P, bool) 위치의 valid 채널을 0 으로. 좌표 불변."""
+    n, d = pc_flat.shape
+    p = d // 4
+    pc = pc_flat.reshape(n, p, 4).clone()
+    pc[..., 3] = pc[..., 3] * (~drop).to(pc.dtype)     # 제거 점 valid→0
+    return pc.reshape(n, d)
+
 
 def dropout_pointcloud(pc_flat: torch.Tensor, level: float) -> torch.Tensor:
-    """(N, P*3) point cloud 각 점을 확률 level 로 제거(→ hole sentinel). 실기 depth dropout 모사.
-
-    level=0 이면 그대로. 제거된 점은 무효 hit(홀)과 같은 값으로 → encoder 가 "데이터 없음"으로 인식.
-    """
+    """(N, P*4) 각 점을 확률 level 로 제거(valid→0). 실기 i.i.d depth dropout 모사."""
     if level <= 0.0:
         return pc_flat
     n, d = pc_flat.shape
-    p = d // 3
-    pc = pc_flat.reshape(n, p, 3)
-    drop = torch.rand(n, p, device=pc.device) < level                 # (n, p)
-    hole = torch.tensor(_HOLE_VALUE, device=pc.device, dtype=pc.dtype)
-    pc = torch.where(drop.unsqueeze(-1), hole, pc)
-    return pc.reshape(n, d)
+    p = d // 4
+    drop = torch.rand(n, p, device=pc_flat.device) < level
+    return _drop_mask(pc_flat, drop)
 
 
 def hole_pointcloud(pc_flat: torch.Tensor, level: float, bh: int = 3, bw: int = 4) -> torch.Tensor:
-    """블록(bh×bw) 단위로 확률 level 제거 → 공간적으로 연속된 구멍. 반사/투명 표면 구멍 모사.
+    """블록(bh×bw) 단위로 확률 level 제거(valid→0) → 공간적으로 연속된 구멍. 반사/투명 표면 모사.
 
-    dropout 의 클러스터판: 점이 아니라 bh×bw 블록을 통째로 Bernoulli(level) 제거. 기대 제거 비율은
-    dropout 과 동일(level)하되 결손이 뭉쳐 있어 encoder 가 국소 정보 전체를 잃음. (12,16) 기본 격자에서
-    bh=3,bw=4 → 4×4=16 블록(각 12점).
+    dropout 의 클러스터판: bh×bw 블록을 통째로 Bernoulli(level) 제거. 기대 제거 비율은 dropout 과
+    동일(level)하되 결손이 뭉쳐 있어 국소 정보 전체 손실. (12,16) 격자 bh=3,bw=4 → 4×4=16 블록.
     """
     if level <= 0.0:
         return pc_flat
     n, d = pc_flat.shape
     h, w = _FRUSTUM_H, _FRUSTUM_W
-    assert d == h * w * 3, f"pc dim {d} != {h}*{w}*3 — frustum 격자 크기 불일치"
+    assert d == h * w * 4, f"pc dim {d} != {h}*{w}*4 — frustum 격자 크기 불일치"
     hb, wb = h // bh, w // bw
-    pc = pc_flat.reshape(n, h, w, 3)
-    block_drop = torch.rand(n, hb, wb, device=pc.device) < level        # (n, hb, wb)
+    block_drop = torch.rand(n, hb, wb, device=pc_flat.device) < level        # (n, hb, wb)
     mask = block_drop.repeat_interleave(bh, dim=1).repeat_interleave(bw, dim=2)  # (n, h, w)
-    hole = torch.tensor(_HOLE_VALUE, device=pc.device, dtype=pc.dtype)
-    pc = torch.where(mask.unsqueeze(-1), hole, pc)
-    return pc.reshape(n, d)
+    return _drop_mask(pc_flat, mask.reshape(n, h * w))
 
 
 def occlude_pointcloud(pc_flat: torch.Tensor, level: float) -> torch.Tensor:
-    """frustum 하단 level 비율의 행(근거리 발밑 시야)을 통째로 가림. 다리/장애물 근거리 차단 모사.
+    """frustum 하단 level 비율의 행(근거리 발밑 시야)을 통째로 가림(valid→0). 다리/장애물 근거리 차단.
 
-    level=0.5 → 아래 절반 행 제거. 최대 구조적 결손(연속 대역). 근거리 지형 정보가 가장 먼저 사라져
-    보행 영향이 큼(재구성은 지형맵 복원 불가, 예측은 고유수용+과거로 메꿈 기대).
+    level=0.5 → 아래 절반 행 제거. 최대 구조적 결손(연속 대역). 근거리 지형 정보가 가장 먼저 사라짐.
     """
     if level <= 0.0:
         return pc_flat
     n, d = pc_flat.shape
     h, w = _FRUSTUM_H, _FRUSTUM_W
-    assert d == h * w * 3, f"pc dim {d} != {h}*{w}*3 — frustum 격자 크기 불일치"
+    assert d == h * w * 4, f"pc dim {d} != {h}*{w}*4 — frustum 격자 크기 불일치"
     k = int(round(level * h))                                          # 가릴 하단 행 수
     if k <= 0:
         return pc_flat
-    pc = pc_flat.reshape(n, h, w, 3)
-    hole = torch.tensor(_HOLE_VALUE, device=pc.device, dtype=pc.dtype)
-    pc[:, h - k:, :, :] = hole
-    return pc.reshape(n, d)
+    mask = torch.zeros(n, h, w, dtype=torch.bool, device=pc_flat.device)
+    mask[:, h - k:, :] = True
+    return _drop_mask(pc_flat, mask.reshape(n, h * w))
 
 
 # eval_pc.py 에서 --degradation 스위치로 선택

@@ -58,15 +58,45 @@ reward 3.04 로 붕괴.** → projector 는 커리큘럼과 **별개 교란**을
 
 ---
 
+## 교란 3 — 결손 sentinel 주입이 max-pool 아티팩트를 만듦 (측정 ④, 2026-07-31)
+
+**증상.** 결손(dropout) 실험은 제거된 점을 sentinel 상수로 치환(injection)한다. sentinel 값을
+바꿔가며 ICCAS 원본 ckpt(icros: A=`2026-07-11_17-59-32`, B=`2026-07-10_17-32-17`)를 평가하니
+**A>B 결과가 sentinel 에 좌우됨** — sentinel 주입은 결손 강건성 측정 도구로 부적합.
+
+dropout err_xy (0%→100%) / 100% 생존율:
+| sentinel | A(recon) 80% | A 100%생존 | B(jepa) 80% | B 100%생존 | 판정 |
+|---|---|---|---|---|---|
+| **mount** (0.325,0,0.045) 학습일치 | 0.326 | 57% | 0.215 | 90% | A급락·B완만 = **ICCAS 주장** |
+| **origin** (0,0,0) | 0.115 | 45% | 0.169 | 30% | **A·B 둘 다 평탄, 격차 소멸** |
+| mean (유효점 평균=imputation) | 0.081 | 41% | 0.169 | 41% | 둘 다 평탄(결손 약함) |
+| below (0,0,−5) 극단 | 0.588 | 1% | 0.688 | 3% | 둘 다 즉시 붕괴 |
+
+**결정적 증거 = mount vs origin.** 둘 다 로봇 근처(33cm 차) 고정 상수로 **동등하게 자의적**인데
+(mean 처럼 imputation 도, below 처럼 극단도 아님), A 가 mount 에선 급락(0.079→0.53)·origin 에선
+평탄(0.079→0.12). **동급의 두 상수가 반대 결론** → "재구성이 결손에 취약"이 아니라 **특정 좌표가
+max-pool 을 hijack**(PointNet max-pool 이 지배적 per-point feature 하나에 장악됨). train-consistent
+방어(반론: mount 만 정답)도 무력 — 학습 안 한 origin 에서 A 가 *더* 강건하므로.
+
+**판정(사용자 확정).** mount↔origin 반전 = 방법론 실패. sentinel 주입으로는 "A 가 실제로 결손에
+강건한가"를 원리적으로 답할 수 없음(hijack↔imputation 사이 요동). **진짜 마스킹 필수**([D]4):
+제거 점을 max-pool 에서 아예 제외(masked_fill −inf, 어떤 값도 주입 안 함) → 인코더 mask 입력 +
+학습 시 무효 hit 도 마스킹(train/eval 일관) + **재학습**. 기존 sentinel-학습 ckpt 는 재사용 불가.
+
+**논문 함의.** ICCAS A>B 결과가 mount 아티팩트일 가능성 큼. 진짜 마스킹 재학습에서 A>B 가
+남는지가 논문 운명을 정함(남으면 진짜 표현 성질, 사라지면 전면 재구성). sentinel 옵션은
+`eval_pc.py --sentinel` 로 보존(mount 기본=ICCAS 재현, 검증됨). 도구: [[je-loco-sentinel-artifact]].
+
 ## 매트릭스 확정 설정
 
-**스크립트 커리큘럼 + projector ON.** 둘 다 검증됨. 각자 다른 교란(terrain 분포 / 학습 안정성)을 잡음.
-multi-seed 필수(최소 3, 권장 5): Head B 는 통제 후에도 A 보다 seed 분산이 크다(reward std 1.78 vs A ~0.5대).
+**스크립트 커리큘럼 + projector ON + 진짜 마스킹 결손(재학습).** 앞 둘은 검증됨. 마스킹은 [D]4 진행 중.
+sentinel 주입 결손으로는 매트릭스를 돌리면 안 됨(아티팩트). multi-seed 필수(최소 3, 권장 5).
 
-## 미결(별도 결정)
+## 완료·미결
+- ✅ **height_scanner 타깃**([D]3): 카메라 footprint 로 정렬(x∈[0.5,2.0], 144셀). recon loss
+  0.083→0.0035 검증. "ICCAS 재현 → 개선 baseline" 으로 성격 변화(논문에 명시).
+- ⏳ **진짜 마스킹**([D]4): 위 교란 3 판정으로 필수 확정. 인코더 mask + 재학습.
 - **명령속도 커리큘럼** `lin_vel_cmd_levels` 는 여전히 적응형. 매트릭스 첫 run 에서 A/B 간
-  `Curriculum/lin_vel_cmd_levels` 곡선이 갈리는지 로그로 확인 후 판단(옵션 1, 사용자 선택).
-- **height_scanner 타깃**([D]3): Head A 재구성 타깃의 ~92%가 카메라 시야 밖(x∈[−0.55,0.55] vs
-  카메라 전방 [0.48,2.3]). 정렬 시 "ICCAS 재현 → 개선 baseline" 으로 실험 성격 변화 — 미결.
+  곡선이 갈리는지 로그로 확인 후 판단(옵션 1, 사용자 선택).
 - **결손 = sentinel 주입**([D]4): 상수 `_HOLE_VALUE` 치환이 max-pool 을 지배(A 가 severity 0.2 에서
   포화). 마스킹(−inf) 기반 재측정 필요(측정 ④). ICCAS 핵심 결과의 sentinel-아티팩트 여부 판정.

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """JE-Loco point cloud 속도추종 env — 검증된 Go2 velocity 위에 pointcloud 관측 그룹 추가.
 
-관측 그룹: policy(45, actor) / pointcloud(96×3=288) / critic(60, privileged, base_lin_vel 포함).
+관측 그룹: policy(45, actor) / pointcloud(192×4=768, [x,y,z,valid]) / critic(60, privileged).
 scene: 표준 velocity 씬 + pc_scanner 전방 프러스텀(192점) + height_scanner 전방정렬 격자(16×9=144, Head A GT).
 """
 
@@ -66,7 +66,7 @@ class PCSceneCfg(RobotSceneCfg):
 
 @configclass
 class PCObservationsCfg(ObservationsCfg):
-    """표준 policy(45)/critic(60) + pointcloud(576, 정책입력) + height_map(144, GT 재구성 타깃)."""
+    """표준 policy(45)/critic(60) + pointcloud(768=192×4 [x,y,z,valid], 정책입력) + height_map(144, GT)."""
 
     @configclass
     class PointCloudCfg(ObsGroup):

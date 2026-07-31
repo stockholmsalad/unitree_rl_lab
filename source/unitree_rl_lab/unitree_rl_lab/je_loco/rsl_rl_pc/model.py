@@ -26,7 +26,12 @@ from rsl_rl.modules.rnn import HiddenState
 
 
 class PointCloudEncoder(nn.Module):
-    """PointNet-lite: (M, P*3) → (M, out_dim). 점당 공유 MLP + global max-pool (순서 불변)."""
+    """PointNet-lite: (M, P*4) → (M, out_dim). 점당 공유 MLP + **마스크드** max-pool (순서 불변).
+
+    각 점 = [x, y, z, valid]. valid=0 인 점(무효 hit·결손)은 max-pool 에서 −inf 로 제외 →
+    **어떤 좌표값도 max-pool 에 주입되지 않음** (측정 ④에서 확인된 sentinel-주입 max-pool hijack
+    아티팩트 제거). 결손 = valid 채널 0 설정만으로 표현(mdp_pc), 좌표 무주입.
+    """
 
     def __init__(self, num_points: int = 96, out_dim: int = 64) -> None:
         super().__init__()
@@ -41,9 +46,15 @@ class PointCloudEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         m = x.shape[0]
-        pts = x.reshape(m, self.P, 3)          # (M, P, 3)
+        pc = x.reshape(m, self.P, 4)           # (M, P, 4) = [x,y,z,valid]
+        pts = pc[..., :3]                       # (M, P, 3) 좌표
+        valid = pc[..., 3] > 0.5               # (M, P)   유효 마스크(노이즈 ±0.02 견고)
         feat = self.point_mlp(pts)             # (M, P, 128)
-        glob = feat.max(dim=1)[0]              # (M, 128) max-pool
+        feat = feat.masked_fill(~valid.unsqueeze(-1), float("-inf"))   # 무효 점 max 제외
+        glob = feat.max(dim=1)[0]              # (M, 128) 마스크드 max-pool
+        # 전부 무효(100% 결손 = 카메라 실명)면 max=−inf → 0 벡터로 대체(NaN 방지). 정책은 z_p 로만 보행.
+        none_valid = ~valid.any(dim=1)                                 # (M,)
+        glob = torch.where(none_valid.unsqueeze(-1), torch.zeros_like(glob), glob)
         return self.global_mlp(glob)           # (M, out_dim)
 
 
@@ -75,7 +86,7 @@ class PointCloudRNNModel(RNNModel):
         # _get_obs_dim(super 초기화 중 호출)이 참조 → super 전에 세팅
         self._pc_group = pc_group
         self._pc_out_dim = pc_out_dim
-        self._pc_num_points = obs[pc_group].shape[-1] // 3
+        self._pc_num_points = obs[pc_group].shape[-1] // 4   # 각 점 [x,y,z,valid] (마스킹)
         self._proprio_group = proprio_group
         self._zp_dim = zp_dim
         # actor 만 proprio 를 z_p 로 인코딩(critic 은 privileged 관측을 raw 사용)
