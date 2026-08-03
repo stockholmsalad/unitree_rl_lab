@@ -81,6 +81,8 @@ class PointCloudRNNModel(RNNModel):
         use_projector: bool = True,
         proj_hidden_dim: int = 128,
         proj_dim: int = 128,
+        jepa_cond_command: bool = False,   # predictor 에 명령 c_t(3) 조건
+        jepa_cond_action: bool = False,    # predictor 에 지평 평균행동(12) 조건
         **kwargs,
     ) -> None:
         # _get_obs_dim(super 초기화 중 호출)이 참조 → super 전에 세팅
@@ -120,8 +122,15 @@ class PointCloudRNNModel(RNNModel):
                 nn.Linear(recon_hidden_dim, hm),
             )
         elif repr_head == "jepa":
+            # predictor 입력 = [z_e(t), z_p(t), (conditioning: command c_t · 지평평균 action)].
+            # 미래 행동/명령을 조건으로 → 미래 관측 z_e(t+k) 예측 가능성↑ (z_p 에 명령은 이미 암묵
+            # 포함되나 raw 로 추가; action 은 z_p 에 없는 실제 변위 신호). runner 가 이 플래그를 읽어
+            # 같은 조건을 구성 = 단일 소스(불일치 원천 차단).
+            self._cond_command = jepa_cond_command
+            self._cond_action = jepa_cond_action
+            self._cond_dim = (3 if jepa_cond_command else 0) + (12 if jepa_cond_action else 0)
             self.jepa_predictor = nn.Sequential(
-                nn.Linear(pc_out_dim + zp_dim, recon_hidden_dim), nn.ELU(),
+                nn.Linear(pc_out_dim + zp_dim + self._cond_dim, recon_hidden_dim), nn.ELU(),
                 nn.Linear(recon_hidden_dim, pc_out_dim),
             )
             self.target_pc_encoder = copy.deepcopy(self.pc_encoder)   # EMA target + stop-grad
@@ -193,9 +202,16 @@ class PointCloudRNNModel(RNNModel):
         return self.recon_decoder(self.pc_encoder(pc_obs))
 
     # ── Head B (jepa) ────────────────────────────────────────────────────────
-    def jepa_predict(self, z_e_t: torch.Tensor, z_p_t: torch.Tensor) -> torch.Tensor:
-        """[z_e(t), z_p(t)] → ẑ_e(t+k). z_p 는 runner 에서 detach 해 넘김(z_e 만 shaping)."""
-        return self.jepa_predictor(torch.cat([z_e_t, z_p_t], dim=-1))
+    def jepa_predict(self, z_e_t: torch.Tensor, z_p_t: torch.Tensor,
+                     cond: torch.Tensor | None = None) -> torch.Tensor:
+        """[z_e(t), z_p(t), cond] → ẑ_e(t+k). z_p·cond 는 runner 에서 detach(z_e 만 shaping).
+
+        cond = 미래 행동 a_{t:t+k} 와/또는 명령 c_t (conditioning). cond_dim=0 이면 안 넘김(구동작).
+        """
+        parts = [z_e_t, z_p_t]
+        if cond is not None:
+            parts.append(cond)
+        return self.jepa_predictor(torch.cat(parts, dim=-1))
 
     def vic_project(self, z_e: torch.Tensor) -> torch.Tensor:
         """VICReg 정규화 대상 = projector(z_e). use_projector=False 면 z_e 그대로(구 동작)."""

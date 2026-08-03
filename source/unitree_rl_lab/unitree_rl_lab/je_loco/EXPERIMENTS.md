@@ -87,10 +87,35 @@ max-pool 을 hijack**(PointNet max-pool 이 지배적 per-point feature 하나�
 남는지가 논문 운명을 정함(남으면 진짜 표현 성질, 사라지면 전면 재구성). sentinel 옵션은
 `eval_pc.py --sentinel` 로 보존(mount 기본=ICCAS 재현, 검증됨). 도구: [[je-loco-sentinel-artifact]].
 
+## 핵심 결과 — 진짜 마스킹에서 ICCAS A>B 는 성립하지 않음 (2026-08-03)
+
+마스킹 재학습(A=recon·B=jepa × seed 1,2, 17800 iter) 체크포인트를 **마스킹 dropout 스윕**으로
+평가. 쉬운 지형(레벨 2.5)·어려운 지형(레벨 9, 계단 12cm) **둘 다**:
+
+**완전 실명(100% dropout) 시:**
+| | ICCAS mount sentinel | 마스킹·쉬운 | 마스킹·어려운(lv9) |
+|---|---|---|---|
+| A(recon) err 배율 | 6.7x | 1.3x | 1.3x |
+| A 실명 생존 | **57%(붕괴)** | 99.6% | 95.5% |
+| B(jepa) 실명 생존 | 90% | ~100% | ~100% |
+
+**어느 헤드도 안 무너짐** — 어려운 지형에서 완전 실명해도 생존 95~100%. ICCAS 의 A 붕괴(생존 57%)가
+sentinel 제거만으로 사라짐 = **A>B 는 sentinel max-pool hijack 아티팩트로 최종 확정.** 오히려
+A s1(좋은 seed)이 clean·실명 모두 err 최저(0.13/0.18), 실명 시 유일하게 제대로 걸음(속도 0.59).
+
+**seed 트레이드오프 발견:** A 는 분산 큼(s1 우수 err 0.13 / s2 나쁨 err 0.45, 실명 시 얼어붙음),
+B 는 일관되나 평범(두 seed ~0.25). "예측이 결손강건"이 아니라 "재구성=정밀하나 학습불안정 /
+예측=안정적이나 평범"이라는 다른 축. 결손 강건성 자체는 A(최소 s1) 우위. n=2 라 seed≥5 로 확정 필요.
+
+**논문 방향:** ICCAS "예측>재구성 결손강건" 주장 폐기. 재프레이밍 후보 — (a) sentinel 주입이
+max-pool 을 hijack 해 허위 차이를 만든다(방법론 규명, mount↔origin 반전 + 마스킹 소거로 입증),
+(b) 마스킹 일관 학습 → 표현 무관 depth 강건성, (c) 재구성 정밀도 우위는 강건성 손해 없이 유지.
+평가 도구: `eval_pc.py --terrain_level N`(어려운 지형), 마스킹 결손(sentinel 없음). [[je-loco-masking-reversal]]
+
 ## 매트릭스 확정 설정
 
-**스크립트 커리큘럼 + projector ON + 진짜 마스킹 결손(재학습).** 앞 둘은 검증됨. 마스킹은 [D]4 진행 중.
-sentinel 주입 결손으로는 매트릭스를 돌리면 안 됨(아티팩트). multi-seed 필수(최소 3, 권장 5).
+**스크립트 커리큘럼 + projector ON + 진짜 마스킹 결손.** 전부 검증됨. sentinel 주입 결손 금지(아티팩트).
+multi-seed 필수(최소 3, **A 분산 커서 권장 5**).
 
 ## 완료·미결
 - ✅ **height_scanner 타깃**([D]3): 카메라 footprint 로 정렬(x∈[0.5,2.0], 144셀). recon loss

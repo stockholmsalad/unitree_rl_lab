@@ -32,6 +32,8 @@ parser.add_argument("--fix_terrain", action="store_true", default=True,
                     help="eval 중 terrain 커리큘럼 정지 → 지형 분포 고정(공정 비교, 논문용 기본 on)")
 parser.add_argument("--no_fix_terrain", dest="fix_terrain", action="store_false",
                     help="terrain 커리큘럼 켠 채 평가(기존 Exp1 방식)")
+parser.add_argument("--terrain_level", type=int, default=-1,
+                    help="모든 env 를 이 지형 레벨에 강제 spawn (0~num_rows-1). -1=기본(max_init 분포). 어려운 지형 평가용")
 parser.add_argument("--eval_seed", type=int, default=42,
                     help="지형 배정 결정론화 → A·B 가 동일 지형을 밟게(공정 비교). 헤드 무관 동일 seed 사용")
 parser.add_argument("--task", type=str, default="Unitree-Go2-JELoco-PC")
@@ -117,6 +119,15 @@ def main():
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     uenv = env.unwrapped
+    # 어려운 지형 평가: 모든 env 를 지정 레벨에 강제 배정(terrain_types 는 유지 → 모든 지형종류 최고난이도).
+    if args_cli.terrain_level >= 0:
+        terr = uenv.scene.terrain
+        import torch as _t
+        lv = min(args_cli.terrain_level, terr.max_terrain_level - 1)
+        terr.terrain_levels[:] = lv
+        terr.env_origins[:] = terr.terrain_origins[terr.terrain_levels, terr.terrain_types]
+        uenv.reset()   # 새 origin 에 리스폰
+        print(f"[eval] terrain_level 강제 = {lv} (max {terr.max_terrain_level-1}) — 어려운 지형")
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, version("rsl-rl-lib"))
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)

@@ -38,6 +38,11 @@ class PCModelCfg(RslRlRNNModelCfg):
     use_projector: bool = True
     proj_hidden_dim: int = 128
     proj_dim: int = 128
+    # Head B predictor conditioning (actor 전용, 단일 소스): 미래 명령/행동을 예측 조건으로.
+    # cond_dim(predictor 입력 확장 = 3·command + 12·action)은 모델이 이 플래그로 내부 계산.
+    # runner 도 actor 에서 이 플래그를 읽으므로 불일치 불가능.
+    jepa_cond_command: bool = False
+    jepa_cond_action: bool = False
 
 
 @configclass
@@ -68,6 +73,7 @@ class JELocoPCPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     lambda_var: float = 1.0         # 분산 hinge(각 dim std≥var_gamma)
     lambda_cov: float = 0.04        # 공분산 off-diag 억제(decorrelate)
     var_gamma: float = 1.0          # 목표 std
+    # (predictor conditioning 은 actor(PCModelCfg)에서만 설정 — runner 가 actor 에서 읽음)
 
     # actor: policy(45×5=225→z_p) + pointcloud(→z_e) / critic: critic(60) + pointcloud(→z_e)
     obs_groups = {

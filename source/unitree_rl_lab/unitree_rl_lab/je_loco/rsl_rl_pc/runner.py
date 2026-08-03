@@ -66,6 +66,9 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
         self._lambda_var = float(train_cfg.get("lambda_var", 1.0))
         self._lambda_cov = float(train_cfg.get("lambda_cov", 0.04))
         self._var_gamma = float(train_cfg.get("var_gamma", 1.0))
+        # predictor conditioning — actor 에서 읽음(단일 소스, model cfg 가 진리원). 불일치 불가능.
+        self._cond_action = bool(getattr(actor, "_cond_action", False))    # 지평 평균 행동(12)
+        self._cond_command = bool(getattr(actor, "_cond_command", False))  # 명령 c_t(3)
         if hasattr(actor, "jepa_predictor"):
             self._jepa_params = list(actor.pc_encoder.parameters()) + list(actor.jepa_predictor.parameters())
             # projector 도 jepa optimizer 가 함께 학습(VICReg 이 이 출력에 걸리므로).
@@ -74,7 +77,8 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
                 self._jepa_params += list(actor.vic_projector.parameters())
             self._jepa_optimizer: torch.optim.Optimizer | None = torch.optim.Adam(self._jepa_params, lr=jepa_lr)
             print(f"[JELoco] Head B JEPA ON (lambda={self._lambda_jepa}, k={self._jepa_k}, "
-                  f"tau={self._ema_tau}, chunks={self._jepa_chunks}, lr={jepa_lr}, projector={_use_proj})")
+                  f"tau={self._ema_tau}, chunks={self._jepa_chunks}, lr={jepa_lr}, projector={_use_proj}, "
+                  f"cond_action={self._cond_action}, cond_command={self._cond_command})")
         else:
             self._jepa_params = []
             self._jepa_optimizer = None
@@ -125,13 +129,17 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
             return {}
         actor = self.alg.actor
         obs_seq = self.alg.storage.observations
-        pc = obs_seq["pointcloud"]                        # (T, N, P*3)
+        pc = obs_seq["pointcloud"]                        # (T, N, P*4)
         prop = obs_seq["policy"]                          # (T, N, 45*H) — 이미 히스토리
         T, N = pc.shape[0], pc.shape[1]
         k = self._jepa_k
         valid_t = torch.arange(0, T - k, device=pc.device)   # t+k<T (히스토리는 obs manager 가 pad)
         if valid_t.numel() == 0:
             return {"jepa": 0.0, "jepa_varcov": 0.0, "z_e_std": 0.0}
+
+        # ── predictor conditioning (미래 행동/명령, storage 에서. grad 없음 = 자동 detach) ──
+        cmd_seq = obs_seq["critic"][:, :, 9:12] if self._cond_command else None      # (T,N,3) 명령
+        act_seq = self.alg.storage.actions if self._cond_action else None            # (T,N,12) 행동
 
         chunks = torch.chunk(torch.arange(N, device=pc.device), self._jepa_chunks)
         self._jepa_optimizer.zero_grad()
@@ -143,7 +151,16 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
             z_p = actor.encode_proprio(prop[:, ch].reshape(T * Nc, -1)).reshape(T, Nc, -1).detach()  # 조건, 안 shaping
             z_e_tgt = actor.target_encode(pc_c).reshape(T, Nc, -1)                  # EMA, stop-grad
 
-            pred = actor.jepa_predict(z_e[valid_t], z_p[valid_t])                   # (nt, Nc, 64)
+            # conditioning: command c_t (3) ⊕ 지평 [t,t+k) 평균 행동 (12). cond_dim 은 k 무관 고정.
+            cond_parts = []
+            if cmd_seq is not None:
+                cond_parts.append(cmd_seq[valid_t][:, ch])                          # (nt, Nc, 3)
+            if act_seq is not None:
+                aw = torch.stack([act_seq[valid_t + j][:, ch] for j in range(k)], 0).mean(0)  # (nt,Nc,12)
+                cond_parts.append(aw)
+            cond = torch.cat(cond_parts, dim=-1) if cond_parts else None
+
+            pred = actor.jepa_predict(z_e[valid_t], z_p[valid_t], cond)             # (nt, Nc, 64)
             loss_j = F.mse_loss(pred, z_e_tgt[valid_t + k])
 
             # VICReg — z_e 가 아니라 projector(z_e) 출력에 부과(SSL 표준). z_e 백화 방지.
