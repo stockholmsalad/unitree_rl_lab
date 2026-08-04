@@ -27,11 +27,34 @@ JEPA predictor conditioning ablation 학습 중(pilab). **핵심 반전 발견 �
 - 로그: `~/mask_logs/Bcond*.log` · 체크포인트: `logs/rsl_rl/je_loco_pc/2026-08-03_18-*_Bcond*/`
 - 4 concurrent(총처리량 상한 ~11k steps/s 6등분→4등분). 12000 도달 ≈ 하루.
 
-## 다음 할 일 (12000 도달 시)
+## 다음 할 일 (12000 도달 시) — **여기부터 재개**
 로그 Z790 으로 rsync → 판정:
 1. **clean err_xy 가 기존 maskB(0.15~0.25)보다 낮아졌나** = B 정밀도 향상(사용자 1차 목표)
 2. **마스킹 dropout 강건성** (`eval_pc.py --degradation dropout`, 필요시 `--terrain_level 9`)
 3. **예측 R² 확실히 양수인가** (jepa loss / z_e_std² 정규화해서 볼 것 — raw 는 스케일 오염)
+
+## 그다음 — JEPA 재설계 (진단 완료, 착수 대기)
+**진단**: 현 JEPA 는 "너무 쉬운 문제"를 풂. k=5(0.1초)면 로봇 5cm 이동 → z_e(t+k)≈z_e(t) →
+최적 predictor≈identity → shaping 신호 빈약 → 예측이 아무것도 안 가르침. conditioning 이
+미미했던 것도 "이미 쉬운 문제"라서. **프레이밍(사용자 동의)**: "B 가 A 를 이긴다"가 아니라
+**"긴 지평 예측 = 결손/가림 하 지형 선행(anticipation) = 재구성 불가능한 니치"**. 마스킹 반전
+(현재프레임 A 우위)과 공존하는 정직한 B 서사.
+
+**의존성 순서(한 번에 하나씩):**
+- **④ done 경계 마스킹** (버그수정): `_jepa_loss_step` 이 valid_t+k 를 done 무시하고 인덱싱 →
+  에피소드 리셋 넘는 쌍은 순간이동 타깃. storage.dones 로 마스킹. 몇 줄. ②의 전제.
+- **② copy-baseline skill score + residual 타깃**: metric = `1 − MSE(pred,tgt)/MSE(copy=z(t),tgt)`,
+  양수여야 예측 성공. 타깃을 Δz=z̄(t+k)−z(t) 로 → 잘 정렬. raw loss 스케일오염 근본 해결.
+- **① 다중지평** (핵심): **T=32 하드제약** → k=50 불가. 먼저 **C안: k∈{5,15,27}(0.1/0.3/0.54초)**,
+  T=32 유지·무료(k=27 은 valid_t 5개×1024env). horizon 임베딩으로 한 predictor 학습. skill score
+  살아나면 지평 레버 확인. 더 필요하면 B안(JEPA 전용 긴 버퍼). A안(num_steps 확대)은 PPO 건드려
+  A/정책 비교 끊기니 최후.
+- **③ ego-motion 조건**: action평균 → v̂·kΔt(변위추정, 기존 vel_decoder 재사용). 지평 길어야 의미.
+- **⑤ grounded 프로브**: frozen height 디코더를 ẑ_e(t+k) 에 붙여 "1초 뒤 지형 몇 cm 오차" 측정 =
+  논문 그림. [D]5 Head C(타깃을 미래 height map)와 합류.
+- **⑥ 추론 페이오프**: 결손 시 예측으로 롤아웃 메꾸기. 예측 작동해야 의미. 마지막.
+
+착수 단위: **④+② 먼저**(runner.py 한 파일, pilab 학습과 충돌 없음) → ① C안.
 
 ## [D] 코드 수정 진행표
 - ✅ 1 scripted curriculum (mdp/curriculums.py `scripted_terrain_levels`, env_cfg 에서 교체)
