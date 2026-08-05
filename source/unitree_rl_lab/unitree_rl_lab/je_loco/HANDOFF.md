@@ -4,10 +4,10 @@
 > 를 읽으면 현황 파악 가능. 새 세션 시작 멘트 예: "je_loco 이어서 할 거야. HANDOFF.md·EXPERIMENTS.md
 > 읽고 현황 파악해줘."
 
-## 한 줄 상태 (2026-08-04)
-JEPA predictor conditioning ablation 학습 중(pilab). **핵심 반전 발견 완료**: ICCAS "예측>재구성
-결손강건" 주장은 sentinel 주입 아티팩트였고, 진짜 마스킹에서 사라짐. 지금은 "JEPA 를 실제로
-작동시키는 레시피" 방향(conditioning)으로 B 개선 시도 중.
+## 한 줄 상태 (2026-08-05)
+**핵심 반전 발견 완료**: ICCAS "예측>재구성 결손강건" = sentinel 아티팩트, 마스킹에서 사라짐.
+**JEPA conditioning(k=5) 실험 완료 → B 향상 실패**(오히려 정밀도·생존 악화). 진단 입증됨:
+k=5 는 near-identity 라 예측 여지 없음. **다음 = JEPA 재설계**(지평 확대). 착수 대기.
 
 ## 연구 서사 (여기까지의 결론 — 뒤집으면 안 됨)
 1. **ICCAS 원본 주장**: 백본 고정, head 만 재구성(A)↔예측(B) 스왑 → depth 결손 시 B 가 우아하게 저하.
@@ -21,17 +21,15 @@ JEPA predictor conditioning ablation 학습 중(pilab). **핵심 반전 발견 �
 6. **현재**: JEPA 를 살리려 predictor conditioning. **action 이 예측을 살림, command 는 z_p 에 이미
    있어 미미**(2800 iter 1차 판정). act·both 를 12000 까지 학습 중.
 
-## 지금 돌고 있는 것 (pilab, env_isaaclab)
-- `run_cond_matrix.sh` 로 실행. **살아있는 4런**: `Bcondact_s{1,2}`, `Bcondboth_s{1,2}` (12000 목표).
-  cmd 단독(`Bcondcmd_s*`)은 예측 개선 미미로 kill 함.
-- 로그: `~/mask_logs/Bcond*.log` · 체크포인트: `logs/rsl_rl/je_loco_pc/2026-08-03_18-*_Bcond*/`
-- 4 concurrent(총처리량 상한 ~11k steps/s 6등분→4등분). 12000 도달 ≈ 하루.
+## conditioning 실험 결과 (완료, 2026-08-05)
+`Bcondact_s{1,2}`·`Bcondboth_s{1,2}`(11400 iter) 마스킹 dropout eval:
+clean err 평균 none 0.168 < act 0.207 < both 0.237, 완전실명 생존 both s2=3%. **conditioning 이
+정밀도·생존 둘 다 악화 → k=5 에선 B 향상 실패.** 상세: EXPERIMENTS.md. 체크포인트:
+`logs/rsl_rl/je_loco_pc/2026-08-03_18-*_Bcond*/`. 결론: 재설계(지평 확대)로.
 
-## 다음 할 일 (12000 도달 시) — **여기부터 재개**
-로그 Z790 으로 rsync → 판정:
-1. **clean err_xy 가 기존 maskB(0.15~0.25)보다 낮아졌나** = B 정밀도 향상(사용자 1차 목표)
-2. **마스킹 dropout 강건성** (`eval_pc.py --degradation dropout`, 필요시 `--terrain_level 9`)
-3. **예측 R² 확실히 양수인가** (jepa loss / z_e_std² 정규화해서 볼 것 — raw 는 스케일 오염)
+## 다음 할 일 — **여기부터 재개: JEPA 재설계**
+conditioning 실패로 재설계가 확정됨. 아래 "JEPA 재설계" 순서대로 ④+② 부터 착수.
+(사용자 의사: "학습 끝나면 재설계 시작하자" → 지금이 그 시점, 단 사용자 확인 후 착수.)
 
 ## 그다음 — JEPA 재설계 (진단 완료, 착수 대기)
 **진단**: 현 JEPA 는 "너무 쉬운 문제"를 풂. k=5(0.1초)면 로봇 5cm 이동 → z_e(t+k)≈z_e(t) →

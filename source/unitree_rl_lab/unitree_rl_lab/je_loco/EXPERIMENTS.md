@@ -87,6 +87,26 @@ max-pool 을 hijack**(PointNet max-pool 이 지배적 per-point feature 하나�
 남는지가 논문 운명을 정함(남으면 진짜 표현 성질, 사라지면 전면 재구성). sentinel 옵션은
 `eval_pc.py --sentinel` 로 보존(mount 기본=ICCAS 재현, 검증됨). 도구: [[je-loco-sentinel-artifact]].
 
+## JEPA conditioning(k=5)은 B 를 향상 못 시킴 — 재설계 필요 확정 (2026-08-05)
+
+predictor 에 command/action 조건 추가 ablation(마스킹 위, jepa, k=5, ~11400 iter, seed 1,2):
+- cmd 단독: 2800 iter 에서 예측 개선 미미(z_p 에 명령 이미 있어 중복) → kill.
+- act·both 를 11400 까지 → 마스킹 dropout eval. 기존 none(maskB, 17800):
+
+| | clean err 평균 | 100% 결손 생존(s1/s2) |
+|---|---|---|
+| none | **0.168** | ~100% / ~100% |
+| act  | 0.207 | 97% / **49%** |
+| both | 0.237 | 46% / **3%** |
+
+**conditioning 이 clean 정밀도를 악화(0.17→0.21~0.24)시키고, 완전 실명 시 생존을 붕괴시킴**(both s2
+=3%). 학습 정규화 예측오차(jepa/z_e_std²)도 셋 다 ~0.3 로 동일(2800→11400 수렴하며 초기 이점 소멸).
+(유보: none 17800 vs cond 11400 iter 불일치. 단 방향은 학습지표+eval 일치.)
+
+**원인=진단 입증:** k=5(0.1초)면 0.5m/s 에서 5cm 이동 → z_e(t+k)≈z_e(t) → 최적 predictor≈identity →
+conditioning 신호가 흡수됨. **"예측이 의미를 가지려면 지평을 늘려야 한다"가 실험으로 확정.** 다음=
+JEPA 재설계(HANDOFF "JEPA 재설계": ④done마스킹+②skill score → ①다중지평 k∈{5,15,27}). [[je-loco-masking-reversal]]
+
 ## 핵심 결과 — 진짜 마스킹에서 ICCAS A>B 는 성립하지 않음 (2026-08-03)
 
 마스킹 재학습(A=recon·B=jepa × seed 1,2, 17800 iter) 체크포인트를 **마스킹 dropout 스윕**으로
