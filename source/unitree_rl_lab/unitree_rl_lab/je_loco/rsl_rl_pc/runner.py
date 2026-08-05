@@ -69,6 +69,8 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
         # predictor conditioning — actor 에서 읽음(단일 소스, model cfg 가 진리원). 불일치 불가능.
         self._cond_action = bool(getattr(actor, "_cond_action", False))    # 지평 평균 행동(12)
         self._cond_command = bool(getattr(actor, "_cond_command", False))  # 명령 c_t(3)
+        # residual 타깃: Δz=z̄(t+k)−z̄(t) 예측(copy=Δ0 과 정렬, 학습 쉬움). False=절대 z̄(t+k)(구동작).
+        self._jepa_residual = bool(train_cfg.get("jepa_residual", False))
         if hasattr(actor, "jepa_predictor"):
             self._jepa_params = list(actor.pc_encoder.parameters()) + list(actor.jepa_predictor.parameters())
             # projector 도 jepa optimizer 가 함께 학습(VICReg 이 이 출력에 걸리므로).
@@ -78,7 +80,8 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
             self._jepa_optimizer: torch.optim.Optimizer | None = torch.optim.Adam(self._jepa_params, lr=jepa_lr)
             print(f"[JELoco] Head B JEPA ON (lambda={self._lambda_jepa}, k={self._jepa_k}, "
                   f"tau={self._ema_tau}, chunks={self._jepa_chunks}, lr={jepa_lr}, projector={_use_proj}, "
-                  f"cond_action={self._cond_action}, cond_command={self._cond_command})")
+                  f"cond_action={self._cond_action}, cond_command={self._cond_command}, "
+                  f"residual={self._jepa_residual})")
         else:
             self._jepa_params = []
             self._jepa_optimizer = None
@@ -135,7 +138,12 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
         k = self._jepa_k
         valid_t = torch.arange(0, T - k, device=pc.device)   # t+k<T (히스토리는 obs manager 가 pad)
         if valid_t.numel() == 0:
-            return {"jepa": 0.0, "jepa_varcov": 0.0, "z_e_std": 0.0}
+            return {"jepa": 0.0, "jepa_varcov": 0.0, "z_e_std": 0.0, "jepa_skill": 0.0}
+
+        # ── ④ done 경계 마스킹: t~t+k 사이 에피소드 리셋이 있으면 t+k 는 새 지형(순간이동) → 제외 ──
+        dones = self.alg.storage.dones.squeeze(-1)                                   # (T, N)
+        win_reset = torch.stack([dones[valid_t + j] for j in range(k)], 0).sum(0)    # (nt, N) 창 내 리셋 수
+        pair_ok = (win_reset == 0)                                                   # (nt, N) 오염 없는 쌍
 
         # ── predictor conditioning (미래 행동/명령, storage 에서. grad 없음 = 자동 detach) ──
         cmd_seq = obs_seq["critic"][:, :, 9:12] if self._cond_command else None      # (T,N,3) 명령
@@ -143,7 +151,7 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
 
         chunks = torch.chunk(torch.arange(N, device=pc.device), self._jepa_chunks)
         self._jepa_optimizer.zero_grad()
-        tot_j = tot_vc = z_std = 0.0
+        tot_j = tot_vc = z_std = tot_skill = 0.0
         for ch in chunks:
             Nc = len(ch)
             pc_c = pc[:, ch].reshape(T * Nc, -1)
@@ -161,7 +169,25 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
             cond = torch.cat(cond_parts, dim=-1) if cond_parts else None
 
             pred = actor.jepa_predict(z_e[valid_t], z_p[valid_t], cond)             # (nt, Nc, 64)
-            loss_j = F.mse_loss(pred, z_e_tgt[valid_t + k])
+
+            # ── ② residual 타깃 + copy-baseline skill score ──
+            tgt_now = z_e_tgt[valid_t]                                              # (nt, Nc, 64) 현재(copy 기준)
+            tgt_next = z_e_tgt[valid_t + k]                                         # (nt, Nc, 64) k 뒤(예측 대상)
+            if self._jepa_residual:
+                target = tgt_next - tgt_now                                         # Δz 예측
+                copy_ref = torch.zeros_like(target)                                 # copy = "안 변함"(Δ0)
+            else:
+                target = tgt_next                                                   # 절대 z̄(t+k) 예측(구동작)
+                copy_ref = tgt_now                                                  # copy = 현재값 복사
+            m = pair_ok[:, ch].float()                                              # (nt, Nc) done 마스크
+            denom = m.sum().clamp(min=1.0)
+            se = (pred - target).pow(2).mean(-1)                                    # (nt, Nc) 쌍별 MSE
+            cse = (copy_ref - target).pow(2).mean(-1)                               # copy baseline MSE
+            loss_j = (se * m).sum() / denom                                         # done-마스킹 예측손실
+            copy_mse = (cse * m).sum() / denom
+            # skill = 1 − pred/copy. >0 이면 "현재값 복사"보다 나음 = 진짜 예측. ≤0 이면 예측 실패.
+            skill = 1.0 - (loss_j.detach() / copy_mse.clamp(min=1e-8))
+            tot_skill += float(skill)
 
             # VICReg — z_e 가 아니라 projector(z_e) 출력에 부과(SSL 표준). z_e 백화 방지.
             # projector 없으면(ablation) h=z_e 로 구 동작. 분산 hinge + 공분산 off-diag.
@@ -184,7 +210,9 @@ class JELocoOnPolicyRunner(OnPolicyRunner):
         self._jepa_optimizer.step()
         actor.ema_update_target(self._ema_tau)
         n = len(chunks)
-        return {"jepa": tot_j / n, "jepa_varcov": tot_vc / n, "z_e_std": z_std / n}
+        # jepa_skill: copy-baseline 대비 skill score(>0=예측성공). 이게 예측 판정의 주 지표.
+        return {"jepa": tot_j / n, "jepa_varcov": tot_vc / n, "z_e_std": z_std / n,
+                "jepa_skill": tot_skill / n}
 
     # stock learn() + (update 직후) velocity(공통) + 표현 헤드(recon 또는 jepa).
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:

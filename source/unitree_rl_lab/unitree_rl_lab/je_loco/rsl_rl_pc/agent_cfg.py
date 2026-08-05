@@ -73,6 +73,7 @@ class JELocoPCPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     lambda_var: float = 1.0         # 분산 hinge(각 dim std≥var_gamma)
     lambda_cov: float = 0.04        # 공분산 off-diag 억제(decorrelate)
     var_gamma: float = 1.0          # 목표 std
+    jepa_residual: bool = False     # True=Δz(t+k)−z(t) 예측(copy-baseline 과 정렬). False=절대 z(t+k)
     # (predictor conditioning 은 actor(PCModelCfg)에서만 설정 — runner 가 actor 에서 읽음)
 
     # actor: policy(45×5=225→z_p) + pointcloud(→z_e) / critic: critic(60) + pointcloud(→z_e)
