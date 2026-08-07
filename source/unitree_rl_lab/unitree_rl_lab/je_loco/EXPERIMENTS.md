@@ -87,6 +87,25 @@ max-pool 을 hijack**(PointNet max-pool 이 지배적 per-point feature 하나�
 남는지가 논문 운명을 정함(남으면 진짜 표현 성질, 사라지면 전면 재구성). sentinel 옵션은
 `eval_pc.py --sentinel` 로 보존(mount 기본=ICCAS 재현, 검증됨). 도구: [[je-loco-sentinel-artifact]].
 
+## JEPA 지평 확대(①)도 무신호 — 이 과제가 예측을 요구 안 함 (2026-08-07)
+
+④done마스킹+②skill+residual 위에서 지평 스윕 k∈{5,15,27}(residual=true, seed 1,2, 7000 iter):
+- **skill score 양수(~0.5)로 예측 작동 시작**(residual 덕). 하지만 **지평 무관 평평**(k5·15·27 다 ~0.5).
+  skill 은 과제난이도 정규화 + ego-motion 얽힘이라 "지형 선행" 판정 못 함.
+- 결손 강건성(dropout·occlusion 둘 다, model_7000): **지평 효과 없음, seed 분산이 지배**.
+  | | clean err | 배율 | 실명생존(개별) |
+  |---|---|---|---|
+  | k5  | 0.210 | 2.4x | 95%(100/91) |
+  | k15 | 0.211 | 2.1x | 95%(90/100) |
+  | k27 | 0.168 | 2.2x | 67%(64/71) |
+  같은 k 안 seed 분산(예: occ 60%생존 k5=92/18)이 k 간 차이를 압도. k27 clean 만 약간 우위(미미).
+  유보: k27 은 T=32 제약상 valid_t=5(JEPA 신호 굶주림) → "k27 나쁨"에 신호부족 교란. 공정한 k=50 은 T 확대 필요.
+
+**메타 결론(강함):** conditioning 실패 + 지평 무신호가 함께 가리킴 — **이 과제(중간지형·전진보행·마스킹학습)는
+결손 강건성이 proprioception 으로 이미 포화**(실명 생존 높음)라 예측이 기여할 여지 없음. 정밀도는
+재구성(A) 우위(마스킹 반전). **즉 이 과제엔 예측 표현이 이길 축이 없음.** 예측의 가치를 보이려면 **시각이
+load-bearing 한 과제**(정밀 foothold·gap = 로드맵 Stage 2 / [D]5 Head C) 필요. → **전략 전환 후보.**
+
 ## JEPA conditioning(k=5)은 B 를 향상 못 시킴 — 재설계 필요 확정 (2026-08-05)
 
 predictor 에 command/action 조건 추가 ablation(마스킹 위, jepa, k=5, ~11400 iter, seed 1,2):
