@@ -128,6 +128,63 @@ def foot_clearance_reward(
     return torch.exp(-torch.sum(reward, dim=1) / std)
 
 
+# ─── Stage 2 foothold 보상 (발밑 지형 RayCaster = privileged, 학습시만. 정책 입력 아님) ───
+def _foot_terrain(env, height_sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg, radius: float):
+    """각 발 주변 지형 요약. 반환: (지형높이 z_t (N,F), 높이범위 rng (N,F), 유효 has (N,F))."""
+    from isaaclab.sensors import RayCaster
+
+    sensor: RayCaster = env.scene.sensors[height_sensor_cfg.name]
+    ray_xy = sensor.data.ray_hits_w[..., :2]                     # (N, R, 2)
+    ray_z = sensor.data.ray_hits_w[..., 2]                       # (N, R)
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_xy = asset.data.body_pos_w[:, asset_cfg.body_ids, :2]   # (N, F, 2)
+    d2 = torch.sum((foot_xy[:, :, None, :] - ray_xy[:, None, :, :]) ** 2, dim=-1)  # (N,F,R)
+    within = d2 <= radius * radius
+    has = within.any(dim=-1)
+    h = ray_z[:, None, :].expand(-1, foot_xy.shape[1], -1)       # (N,F,R)
+    hmax = torch.where(within, h, torch.full_like(h, -1e9)).amax(-1)
+    hmin = torch.where(within, h, torch.full_like(h, 1e9)).amin(-1)
+    rng = torch.where(has, (hmax - hmin).clamp(min=0.0), torch.zeros_like(hmax))
+    w = within.float()
+    z_t = torch.where(has, (h * w).sum(-1) / w.sum(-1).clamp(min=1.0), torch.zeros_like(hmax))
+    return z_t, rng, has
+
+
+def foot_clearance_terrain(
+    env: ManagerBasedRLEnv, height_sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg,
+    target_clearance: float = 0.08, std: float = 0.05, tanh_mult: float = 2.0, radius: float = 0.10,
+) -> torch.Tensor:
+    """스윙 발이 **발밑 지형 위로** target_clearance 이상 뜨면 보상 (계단 인지 클리어런스, 사용자 제안).
+
+    기존 foot_clearance_reward 는 절대 높이 기준이라 계단(지형높이 변동)엔 부적합. 여기선 발높이에서
+    발밑 지형높이를 빼 상대 클리어런스를 계산 → 계단 어느 단이든 '지형 위로 충분히 들기'를 학습.
+    스윙(수평속도 큰) 발에만 적용(tanh) → 접지 발은 안 건드림.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    z_t, _, _ = _foot_terrain(env, height_sensor_cfg, asset_cfg, radius)
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]     # (N,F)
+    clearance = foot_z - z_t                                     # 발-지형 상대높이
+    err = torch.square(clearance - target_clearance)
+    swing = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    return torch.exp(-torch.sum(err * swing, dim=1) / std)
+
+
+def foothold_safety(
+    env: ManagerBasedRLEnv, height_sensor_cfg: SceneEntityCfg, contact_sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg, radius: float = 0.10, edge_scale: float = 12.0,
+) -> torch.Tensor:
+    """접지한 발이 **평탄면(계단 면 중앙)** 이면 보상↑, edge/단차/gap(주변 높이범위 큼)이면 보상↓.
+
+    착지점 주변 지형 높이범위 rng 로 판정: 평탄(rng≈0)→exp(0)=1, edge(rng 큼)→0. 접지한 발만 합산.
+    foot_edge_penalty(icros)를 '면 안착 보상'으로 전환. weight 양수로 사용.
+    """
+    _, rng, _ = _foot_terrain(env, height_sensor_cfg, asset_cfg, radius)
+    forces = env.scene.sensors[contact_sensor_cfg.name].data.net_forces_w[:, contact_sensor_cfg.body_ids, :]
+    in_contact = torch.linalg.norm(forces, dim=-1) > 1.0        # (N,F)
+    safe = torch.exp(-edge_scale * rng)                         # 평탄=1, edge→0
+    return torch.sum(in_contact.float() * safe, dim=1)
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

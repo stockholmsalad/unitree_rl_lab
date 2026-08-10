@@ -226,6 +226,75 @@ class JELocoPCEnvCfg(RobotEnvCfg):
 
 
 @configclass
+class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
+    """Stage 2 — 계단 정밀 foothold. 계단 위주 지형 + foothold 보상 2항.
+
+    규율: foot_scan(발밑 GT height)은 **보상 계산에만**(privileged, 배포 시 제거). 정책 입력(actor obs)은
+    point cloud(전방 카메라)만 — Stage 1 과 동일, real 배포 가능. A(recon)·B(jepa) 를 이 env 로 재학습해
+    "예측이 결손 하 발딛기를 재구성보다 정확히 하나"(예측이 이길 축)를 시험.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # ── 발밑 dense 스캔 (보상 전용 privileged. 정책 관측 아님) ──
+        self.scene.foot_scan = RayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base",
+            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.GridPatternCfg(resolution=0.04, size=[1.0, 0.7], ordering="yx"),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground"],
+        )
+        self.scene.foot_scan.update_period = self.decimation * self.sim.dt
+
+        # ── 지형 = 계단 위주 (foothold 가 시각-필수인 지형) ──
+        self.scene.terrain.terrain_generator.sub_terrains = {
+            "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.15),
+            "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+                proportion=0.1, noise_range=(0.01, 0.05), noise_step=0.01, border_width=0.25
+            ),
+            "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion=0.375, step_height_range=(0.03, 0.15), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False,
+            ),
+            "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.375, step_height_range=(0.03, 0.15), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False,
+            ),
+        }
+
+        # ── foothold 보상 2항 (단일 변수: Stage 1 대비 이 둘만 추가) ──
+        foot = SceneEntityCfg("robot", body_names=".*_foot")
+        hs = SceneEntityCfg("foot_scan")
+        cs = SceneEntityCfg("contact_forces", body_names=".*_foot")
+        # ① 지형 상대 클리어런스(사용자 제안): 스윙 발이 발밑 지형 위로 충분히 뜨게
+        self.rewards.foot_clearance_terrain = RewTerm(
+            func=mdp.foot_clearance_terrain, weight=1.0,
+            params={"height_sensor_cfg": hs, "asset_cfg": foot,
+                    "target_clearance": 0.10, "std": 0.05, "tanh_mult": 2.0},
+        )
+        # ② foothold safety: 착지점이 면 중앙(평탄)이면 +, edge/gap 이면 −
+        self.rewards.foothold_safety = RewTerm(
+            func=mdp.foothold_safety, weight=0.5,
+            params={"height_sensor_cfg": hs, "contact_sensor_cfg": cs, "asset_cfg": foot, "edge_scale": 12.0},
+        )
+        # 기존 절대높이 클리어런스는 계단에서 부적합 → 제거(지형 상대판으로 대체)
+        self.rewards.foot_clearance = None
+
+
+@configclass
+class JELocoPCFootholdPlayEnvCfg(JELocoPCFootholdEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.max_init_terrain_level = 3
+        self.observations.policy.enable_corruption = False
+        self.observations.pointcloud.enable_corruption = False
+        self.events.push_robot = None
+
+
+@configclass
 class JELocoPCPlayEnvCfg(JELocoPCEnvCfg):
     def __post_init__(self):
         super().__post_init__()

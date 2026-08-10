@@ -87,6 +87,26 @@ max-pool 을 hijack**(PointNet max-pool 이 지배적 per-point feature 하나�
 남는지가 논문 운명을 정함(남으면 진짜 표현 성질, 사라지면 전면 재구성). sentinel 옵션은
 `eval_pc.py --sentinel` 로 보존(mount 기본=ICCAS 재현, 검증됨). 도구: [[je-loco-sentinel-artifact]].
 
+## Stage 2 1단계 — foothold 는 시각-필수(방향 유효), 단 현 baseline 은 비교 불가 (2026-08-07)
+
+`eval_foothold.py`(신설): 발밑 dense RayCaster(foot_scan, **eval 전용 채점기** — 정책 입력 아님,
+real 에선 영상/마커로 대체) 로 계단에서 발 착지 시 주변 지형 높이범위>thr 이면 "edge 접촉" 계측.
+마스킹 A/B(그냥걷기 학습, 계단 proportion 0.05) 를 계단 강제(lv2/3/6)에서 clean vs 결손 평가.
+
+**결론1 (방향 유효): foothold 는 시각-필수.** A 의 edge_rate 가 결손 따라 상승(lv6: 0.10→0.42, 4배),
+100% 결손서 A·B 다 붕괴. "그냥걷기"(결손에도 생존 포화)와 달리 이 과제는 시각을 요구 → Stage 2 유효.
+**결론2 (baseline 비교 불가): 현 체크포인트로 A/B 공정비교 불가.** A=전진하며 계단 오름(edge 자주 밟음),
+B=거의 정지(speed 0.06)/낙상 → edge_rate 차이가 "정밀 딛기"가 아니라 "계단을 걷기나 하나"에서 옴.
+둘 다 계단 학습 안 됐음. **→ 2단계(계단지형+foothold 보상 재학습) 필수.**
+
+**주의(privileged 규율):** foot_scan(발밑 GT)은 **평가 채점 + (2단계)보상에만** 사용, 학습시만·배포시 제거.
+정책 입력(actor obs)은 point cloud(전방 카메라)만 — real 배포 가능. critic·velocity head 와 동일 규율.
+
+**2단계 계획:** 지형 계단화(proportion 0.4~0.5, 5~12cm) + 보상 2항 — ① clearance(스윙발이 곧 밟을
+지형+여유 이상 뜨면 +, 사용자 제안, 기존 foot_clearance_reward 강화) ② foothold_safety(착지점 주변
+평탄=면중앙 +, edge/gap −, foot_edge_penalty[icros] 를 보상화). A(recon)·B(jepa) 재학습 →
+**"foothold 보상 학습 시 예측(B)이 결손 하 발딛기를 재구성(A)보다 정확히 하나"** = 예측이 이길 축의 결정 시험.
+
 ## JEPA 지평 확대(①)도 무신호 — 이 과제가 예측을 요구 안 함 (2026-08-07)
 
 ④done마스킹+②skill+residual 위에서 지평 스윕 k∈{5,15,27}(residual=true, seed 1,2, 7000 iter):

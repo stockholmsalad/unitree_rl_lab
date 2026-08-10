@@ -23,3 +23,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.agent_cfg:JELocoPCPPORunnerCfg",
     },
 )
+
+# Stage 2 — 계단 정밀 foothold (계단 지형 + foothold 보상 2항). 정책 입력은 Stage 1 과 동일.
+gym.register(
+    id="Unitree-Go2-JELoco-Foothold",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_cfg:JELocoPCFootholdEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.env_cfg:JELocoPCFootholdPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.agent_cfg:JELocoPCPPORunnerCfg",
+    },
+)
