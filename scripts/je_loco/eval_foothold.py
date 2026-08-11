@@ -27,6 +27,8 @@ parser.add_argument("--warmup", type=int, default=120)
 parser.add_argument("--dropout_levels", type=str, default="0.0,1.0")
 parser.add_argument("--degradation", type=str, default="dropout", choices=["dropout", "hole", "occlusion"])
 parser.add_argument("--terrain_level", type=int, default=6, help="계단 난이도(0~9). 높을수록 단높이 큼")
+parser.add_argument("--keep_terrain", action="store_true",
+                    help="지형 강제 안 함 → env 자체 지형(학습분포) 사용. 순수계단 강제 시 정책이 얼어붙는 문제 회피")
 parser.add_argument("--edge_threshold", type=float, default=0.04, help="발 주변 높이차[m] 초과 시 edge 접촉")
 parser.add_argument("--foot_radius", type=float, default=0.10, help="발 주변 edge 탐색 반경[m]")
 parser.add_argument("--eval_seed", type=int, default=42)
@@ -112,17 +114,22 @@ def run_level(env, uenv, policy, robot, foot_ids, contact_ids, dev, level, degra
 def main():
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs, entry_point_key="play_env_cfg_entry_point")
     env_cfg.seed = args_cli.eval_seed
-    # 지형 = 계단만 (foothold 시각-필수성은 계단에서 드러남)
-    env_cfg.curriculum.terrain_levels = None
-    env_cfg.scene.terrain.terrain_generator.sub_terrains = {
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.5, step_height_range=(0.05, 0.18), step_width=0.30,
-            platform_width=3.0, border_width=1.0, holes=False),
-        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.5, step_height_range=(0.05, 0.18), step_width=0.30,
-            platform_width=3.0, border_width=1.0, holes=False),
-    }
-    # eval 전용 발밑 dense 스캔 (base 중심, ±0.5×0.35m, res 0.04 → 발 주변 지형 높이)
+    if not args_cli.keep_terrain:
+        # 지형 = 계단만 강제 (주의: 순수 계단은 정책이 얼어붙을 수 있음 → --keep_terrain 권장)
+        env_cfg.curriculum.terrain_levels = None
+        env_cfg.scene.terrain.terrain_generator.sub_terrains = {
+            "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion=0.5, step_height_range=(0.05, 0.18), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False),
+            "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.5, step_height_range=(0.05, 0.18), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False),
+        }
+    else:
+        # 학습 분포 그대로(혼합 계단) — 정책이 실제로 걷는 지형에서 foothold 측정.
+        # 커리큘럼만 정지(레벨 고정), sub_terrains 는 env 자체(Foothold=계단 0.75) 유지.
+        env_cfg.curriculum.terrain_levels = None
+    # 발밑 dense 스캔 (보상/평가 privileged. Foothold env 는 이미 있음 → 동일 config 로 덮어써도 무방)
     env_cfg.scene.foot_scan = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
@@ -134,7 +141,7 @@ def main():
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env = gym.make(args_cli.task, cfg=env_cfg)
     uenv = env.unwrapped
-    if args_cli.terrain_level >= 0:
+    if args_cli.terrain_level >= 0 and not args_cli.keep_terrain:
         terr = uenv.scene.terrain
         lv = min(args_cli.terrain_level, terr.max_terrain_level - 1)
         terr.terrain_levels[:] = lv

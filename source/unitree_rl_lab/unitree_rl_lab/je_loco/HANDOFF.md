@@ -4,11 +4,18 @@
 > 를 읽으면 현황 파악 가능. 새 세션 시작 멘트 예: "je_loco 이어서 할 거야. HANDOFF.md·EXPERIMENTS.md
 > 읽고 현황 파악해줘."
 
-## 한 줄 상태 (2026-08-07)
+## 한 줄 상태 (2026-08-11)
 **핵심 반전**: ICCAS "예측>재구성 결손강건" = sentinel 아티팩트, 마스킹에서 사라짐. JEPA 살리기
-(conditioning·지평확대) 둘 다 무신호 — 이 과제는 proprioception 으로 포화. **전략 전환 = Stage 2
-foothold 과제로.** 1단계 완료: **foothold 는 시각-필수(방향 유효)**, 단 현 baseline(그냥걷기 학습)은
-계단 못 올라 A/B 비교 불가 → **2단계(계단지형+foothold 보상 재학습) 착수 대기.** 사용자 동의 후 코드.
+(conditioning·지평확대) 무신호 — 그냥걷기는 proprioception 포화. → **Stage 2 foothold 로 전환.**
+foothold 1차 학습(계단만)은 정지 편법(foothold_safety 를 서서 챙김)으로 실패. **2차 = 보상 재설계
+(정지게이트·대각선trot·명령0.5~1.5) + 지형 다양화(계단·gap·디딤돌·구멍·블록) 완료, A/B 재학습 착수 대기.**
+
+## 프로젝트 우선순위 (사용자 확정 2026-08-11)
+1. **먼저**: 예측(B) vs 재구성(A) 표현 비교 결론 — **raycasting 입력 고정**(입력 바꾸면 표현비교 오염).
+   Stage 2 foothold 다양지형에서 A/B 재학습 → 결손 하 foothold 정밀도 비교.
+2. **그다음**: **D435i(depth 이미지) 입력으로 JEPA 비정형지형 실기.** = 입력표현 축 별도 실험.
+   → **depth 전환은 표현결론 후 2단계 카드로 확정.** 지금 depth 로 바꾸지 말 것(결손실험 재설계+
+   PointNet→CNN 교체 큰 비용, 표현비교 축 흔들림). raycasting proxy 유지가 현 단계 정답.
 
 ## 연구 서사 (여기까지의 결론 — 뒤집으면 안 됨)
 1. **ICCAS 원본 주장**: 백본 고정, head 만 재구성(A)↔예측(B) 스왑 → depth 결손 시 B 가 우아하게 저하.

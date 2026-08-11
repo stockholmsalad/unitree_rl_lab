@@ -248,19 +248,39 @@ class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
         )
         self.scene.foot_scan.update_period = self.decimation * self.sim.dt
 
-        # ── 지형 = 계단 위주 (foothold 가 시각-필수인 지형) ──
+        # ── 지형 = 계단 + gap + 불규칙블록 + 디딤돌 + 계단구멍 (시각-필수·비정형·결손민감 다양화) ──
+        # foothold 의 핵심은 "안 보이면 빠지는" gap/디딤돌/구멍 — 여기서 결손 시 예측(B)이 재구성(A)보다
+        # 유리할 여지가 큼(가려진 발밑을 예측). 계단만으론 그 차이가 약함.
         self.scene.terrain.terrain_generator.sub_terrains = {
-            "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.15),
+            "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
             "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-                proportion=0.1, noise_range=(0.01, 0.05), noise_step=0.01, border_width=0.25
+                proportion=0.1, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
             ),
             "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-                proportion=0.375, step_height_range=(0.03, 0.15), step_width=0.30,
+                proportion=0.2, step_height_range=(0.03, 0.15), step_width=0.30,
                 platform_width=3.0, border_width=1.0, holes=False,
             ),
             "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-                proportion=0.375, step_height_range=(0.03, 0.15), step_width=0.30,
+                proportion=0.2, step_height_range=(0.03, 0.15), step_width=0.30,
                 platform_width=3.0, border_width=1.0, holes=False,
+            ),
+            # 계단에 구멍(발 빠지면 실패) — foothold 정밀도가 진짜 필요
+            "stairs_holes": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.1, step_height_range=(0.03, 0.12), step_width=0.32,
+                platform_width=3.0, border_width=1.0, holes=True,
+            ),
+            # gap: 착지 잘못하면 빠지는 구멍
+            "gaps": terrain_gen.MeshGapTerrainCfg(
+                proportion=0.1, gap_width_range=(0.1, 0.5), platform_width=1.5,
+            ),
+            # 불규칙 높이 블록 — 발 위치 예측 어려움
+            "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+                proportion=0.1, grid_width=0.45, grid_height_range=(0.03, 0.15), platform_width=2.0,
+            ),
+            # 디딤돌 — foothold 연구 정석(돌 위에만 정확히 딛기)
+            "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
+                proportion=0.1, stone_height_max=0.1, stone_width_range=(0.3, 0.5),
+                stone_distance_range=(0.05, 0.2), holes_depth=-1.0, platform_width=2.0,
             ),
         }
 
@@ -281,6 +301,17 @@ class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
         )
         # 기존 절대높이 클리어런스는 계단에서 부적합 → 제거(지형 상대판으로 대체)
         self.rewards.foot_clearance = None
+
+        # ── 보상 균형·gait·명령 (사용자 관찰 반영. 값은 knob) ──
+        # ③ 대각선 trot 강제: offset[0,0.5,0.5,0]=FL+RR / FR+RL(이미 대각선). 가중치 0.2→0.75 로
+        #    올려 실제로 강제(0.2 는 약해 정책이 앞2/뒤2 로 이탈). period 0.5 유지.
+        self.rewards.feet_gait.weight = 0.75
+        # 속도추종 가중치 소폭↑(정지보다 전진이 이득 되게). track_lin_vel_xy 기본 1.5.
+        self.rewards.track_lin_vel_xy.weight = 2.0
+        # ① 명령 속도: ranges(시작)는 0.5~0.8, limit(커리큘럼 상한)만 1.5 → 서서히 빨라짐(점진).
+        cmd = self.commands.base_velocity
+        cmd.ranges.lin_vel_x = (0.5, 0.8)
+        cmd.limit_ranges.lin_vel_x = (0.5, 1.5)
 
 
 @configclass
