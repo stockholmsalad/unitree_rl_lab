@@ -303,11 +303,16 @@ class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
         self.rewards.foot_clearance = None
 
         # ── 보상 균형·gait·명령 (사용자 관찰 반영. 값은 knob) ──
-        # ③ 대각선 trot 강제: offset[0,0.5,0.5,0]=FL+RR / FR+RL(이미 대각선). 가중치 0.2→0.75 로
-        #    올려 실제로 강제(0.2 는 약해 정책이 앞2/뒤2 로 이탈). period 0.5 유지.
+        # ③ 대각선 trot: offset[0,0.5,0.5,0]=FL+RR / FR+RL(이미 대각선). 가중치 0.2→0.75.
         self.rewards.feet_gait.weight = 0.75
-        # 속도추종 가중치 소폭↑(정지보다 전진이 이득 되게). track_lin_vel_xy 기본 1.5.
-        self.rewards.track_lin_vel_xy.weight = 2.0
+        # ★ 추종 vs 발동작 균형 재조정(2026-08-11): 발동작 보상이 속도·자세 추종을 압도해
+        #   error_vel_xy 0.5·yaw 0.85 로 커짐(정책이 '명령대로 걷기'보다 '발 딛기' 우선). →
+        #   추종 대폭↑ + 발동작↓ 로 "걸으면서 딛기"가 되게. (foothold 는 걷기 대신이 아님)
+        self.rewards.track_lin_vel_xy.weight = 3.0    # 선속도 추종 (xy 0.5 대응)
+        self.rewards.track_ang_vel_z.weight = 2.0     # 회전 추종 강화 (yaw 0.85 대응, 기본 0.75)
+        self.rewards.flat_orientation_l2.weight = -4.0  # 자세 불안정 억제 (기본 −2.5)
+        self.rewards.foot_clearance_terrain.weight = 0.6   # 발동작 비중↓ (1.0→0.6)
+        self.rewards.foothold_safety.weight = 0.35         # 〃 (0.5→0.35)
         # ① 명령 속도: ranges(시작)는 0.5~0.8, limit(커리큘럼 상한)만 1.5 → 서서히 빨라짐(점진).
         cmd = self.commands.base_velocity
         cmd.ranges.lin_vel_x = (0.5, 0.8)
