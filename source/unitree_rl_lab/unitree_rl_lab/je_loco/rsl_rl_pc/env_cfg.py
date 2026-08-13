@@ -270,8 +270,10 @@ class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
                 platform_width=3.0, border_width=1.0, holes=True,
             ),
             # gap: 착지 잘못하면 빠지는 구멍
+            # gap 폭 상한 0.3m — Go2 trot 보폭 한계(~0.3m) 내. 0.5m 는 점프 없이 불가능해
+            # teacher 가 가장자리서 엉거주춤(과제 불능, 2026-08-13 play 관찰). platform 2.0 = 도움닫기.
             "gaps": terrain_gen.MeshGapTerrainCfg(
-                proportion=0.1, gap_width_range=(0.1, 0.5), platform_width=1.5,
+                proportion=0.1, gap_width_range=(0.05, 0.3), platform_width=2.0,
             ),
             # 불규칙 높이 블록 — 발 위치 예측 어려움
             "boxes": terrain_gen.MeshRandomGridTerrainCfg(
@@ -429,8 +431,10 @@ class JELocoTeacherEnvCfg(RobotEnvCfg):
                 proportion=0.1, step_height_range=(0.03, 0.12), step_width=0.32,
                 platform_width=3.0, border_width=1.0, holes=True,
             ),
+            # gap 폭 상한 0.3m — Go2 trot 보폭 한계(~0.3m) 내. 0.5m 는 점프 없이 불가능해
+            # teacher 가 가장자리서 엉거주춤(과제 불능, 2026-08-13 play 관찰). platform 2.0 = 도움닫기.
             "gaps": terrain_gen.MeshGapTerrainCfg(
-                proportion=0.1, gap_width_range=(0.1, 0.5), platform_width=1.5,
+                proportion=0.1, gap_width_range=(0.05, 0.3), platform_width=2.0,
             ),
             "boxes": terrain_gen.MeshRandomGridTerrainCfg(
                 proportion=0.1, grid_width=0.45, grid_height_range=(0.03, 0.15), platform_width=2.0,

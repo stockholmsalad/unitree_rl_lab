@@ -10,6 +10,24 @@
 foothold 1차 학습(계단만)은 정지 편법(foothold_safety 를 서서 챙김)으로 실패. **2차 = 보상 재설계
 (정지게이트·대각선trot·명령0.5~1.5) + 지형 다양화(계단·gap·디딤돌·구멍·블록) 완료, A/B 재학습 착수 대기.**
 
+## Teacher-Student 파이프라인 (사용자 채택 2026-08-12, 동기 재서술 합의)
+동기: ~~"재구성 취약"~~(반증됨) → **"온라인 JEPA 는 학습 불능(데이터오염·identity·커리큘럼결합, 전부
+실측) → 오프라인 사전학습으로 해소되는지 시험"**. 필수 대조군 = **S-recon**(같은 teacher 데이터로
+재구성 사전학습) — 사전학습 효과와 목표 효과 분리.
+- **Phase 1 ✅ 코드완료·pilab 학습중**: `Unitree-Go2-JELoco-Teacher` — privileged heightmap(187,
+  전방이동 x∈[−0.5,1.1]) actor, 순정 MLP PPO(train_pc 로 실행, aux 자동 OFF), 지형 8종, 명령 정상화
+  (전진 0~1.5·횡±0.4·회전±1.0·standing 5%), fhA3 재조정 보상 + air_time 0.5 + gait 0.75 + foothold
+  (0.6/0.35, motion-gated). 4096env ~35k steps/s. **게이트 G2 = play 육안**(대각선 trot·발들림) 必.
+- **Phase 2 ✅ 도구완료·스모크통과**: `collect_teacher_data.py`(pc768+policy232+act+done 샤드 npz,
+  전 지형레벨 균등스폰) + `pretrain_repr.py`(순수 PyTorch, --objective jepa|recon). jepa =
+  action-cond 다중지평 k∈{5,15,25,50}(T=32 제약 해소) + residual Δz + EMA + VICReg-projector +
+  **per-k skill score**. --mask_aug 로 결손증강. 인코더 state_dict = PointCloudEncoder 키 그대로
+  → Phase 3 pc_encoder 직접 로드 검증됨.
+- **Phase 3 ⬜**: student RL 에 frozen 인코더 3종(jepa/recon/scratch) 로드 훅 + foothold·결손 비교.
+  **TODO(착수 전)**: Kp/Kd(액추에이터 게인) 랜덤화 추가 — DreamWaQ 표준 DR 중 유일하게 빠진 항목
+  (payload −1~+3kg·마찰 0.3~1.2·푸시 ±0.5 는 base EventCfg 에 이미 있음. 2026-08-13 확인).
+  teacher 엔 안 넣음(시범 품질 우선, 한 번에 한 변수). 실기 나가는 student 가 수혜자.
+
 ## 프로젝트 우선순위 (사용자 확정 2026-08-11)
 1. **먼저**: 예측(B) vs 재구성(A) 표현 비교 결론 — **raycasting 입력 고정**(입력 바꾸면 표현비교 오염).
    Stage 2 foothold 다양지형에서 A/B 재학습 → 결손 하 foothold 정밀도 비교.
