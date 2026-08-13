@@ -348,3 +348,148 @@ class JELocoPCPlayEnvCfg(JELocoPCEnvCfg):
         self.events.push_robot = None
         # point cloud 검증용 — raycaster hit 점을 GUI 에 마커로 표시(로봇 따라다니며 지형 hit)
         self.scene.pc_scanner.debug_vis = True
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase 1 — Teacher (privileged heightmap 으로 험지를 '잘' 걷는 정책)
+#
+# 목적: Phase 2(오프라인 JEPA/recon 사전학습)의 데이터 공장. 시각(pc) 없이 GT heightmap 을
+# actor 에 직접 줘서(=teacher) 계단·gap·디딤돌에서 깔끔한 보행을 확립한다.
+# 설계 근거(EXPERIMENTS.md·2026-08-11/12 논의):
+#   - 순정 Go2-Velocity 는 잘 걸음(사용자 육안 확인) → 그 명령·보상 골격에서 출발
+#   - je_loco 가 좁힌 명령(회전0·횡0·0.3~0.6)이 더듬거림·yaw 불안정의 원인 → 정상화
+#   - 걷기와 foothold 동시학습이 기형 유발 → teacher 는 순수 PPO(순정 train 파이프라인)
+# 통과 게이트: G1 추종(xy<0.25,yaw<0.2) · G2 play 육안(대각선 trot·발 들림) · G3 계단 12cm+
+# 학습: train_pc.py --task Unitree-Go2-JELoco-Teacher (JELoco aux 는 hasattr 가드로 전부 OFF,
+#       plain MLP PPO 로 동작. pc 렌더 없음 → 4096 env 가능)
+# ═════════════════════════════════════════════════════════════════════════════
+@configclass
+class TeacherObservationsCfg(ObservationsCfg):
+    """순정 관측 + privileged height_scan(187=17×11) 을 actor·critic 모두에 (teacher 의 '완벽한 눈')."""
+
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        # privileged — noise 없음(항목별 noise 미지정이라 corruption 켜져도 clean)
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.0},
+            clip=(-1.0, 1.5),
+        )
+
+    @configclass
+    class CriticCfg(ObservationsCfg.CriticCfg):
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.0},
+            clip=(-1.0, 1.5),
+        )
+
+    policy: PolicyCfg = PolicyCfg()
+    critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class JELocoTeacherEnvCfg(RobotEnvCfg):
+    """Phase 1 Teacher — 순정 RobotEnvCfg 직접 상속(pc·GRU·스크립트커리큘럼 무관). 적응형 커리큘럼."""
+
+    observations: TeacherObservationsCfg = TeacherObservationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # ── height_scanner 전방 이동: 커버 x∈[−0.5,+1.1] (몸 아래 + 전방 발딛기 계획) ──
+        self.scene.height_scanner.offset = RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 20.0))
+
+        # ── foot_scan (foothold 보상 전용 privileged. 관측 아님) ──
+        self.scene.foot_scan = RayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base",
+            offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.GridPatternCfg(resolution=0.04, size=[1.0, 0.7], ordering="yx"),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground"],
+        )
+        self.scene.foot_scan.update_period = self.decimation * self.sim.dt
+
+        # ── 지형 = foothold 8종 (Foothold env 와 동일 분포 — student 가 뛸 지형에서 teacher 도 걸어야) ──
+        self.scene.terrain.terrain_generator.sub_terrains = {
+            "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
+            "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+                proportion=0.1, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
+            ),
+            "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+                proportion=0.2, step_height_range=(0.03, 0.15), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False,
+            ),
+            "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.2, step_height_range=(0.03, 0.15), step_width=0.30,
+                platform_width=3.0, border_width=1.0, holes=False,
+            ),
+            "stairs_holes": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+                proportion=0.1, step_height_range=(0.03, 0.12), step_width=0.32,
+                platform_width=3.0, border_width=1.0, holes=True,
+            ),
+            "gaps": terrain_gen.MeshGapTerrainCfg(
+                proportion=0.1, gap_width_range=(0.1, 0.5), platform_width=1.5,
+            ),
+            "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+                proportion=0.1, grid_width=0.45, grid_height_range=(0.03, 0.15), platform_width=2.0,
+            ),
+            "stepping_stones": terrain_gen.HfSteppingStonesTerrainCfg(
+                proportion=0.1, stone_height_max=0.1, stone_width_range=(0.3, 0.5),
+                stone_distance_range=(0.05, 0.2), holes_depth=-1.0, platform_width=2.0,
+            ),
+        }
+        # (커리큘럼: RobotEnvCfg 기본 = 적응형 terrain_levels_vel. teacher 는 단일정책이라 통제 불필요)
+
+        # ── 명령 정상화 (je_loco 가 죽인 회전·횡이동 복원. 후진만 제외 — 사용자 결정) ──
+        cmd = self.commands.base_velocity
+        cmd.rel_standing_envs = 0.05
+        cmd.ranges.lin_vel_x = (0.0, 0.8)
+        cmd.limit_ranges.lin_vel_x = (0.0, 1.5)
+        cmd.ranges.lin_vel_y = (-0.2, 0.2)
+        cmd.limit_ranges.lin_vel_y = (-0.4, 0.4)
+        cmd.ranges.ang_vel_z = (-0.5, 0.5)
+        cmd.limit_ranges.ang_vel_z = (-1.0, 1.0)
+
+        # ── 보상: fhA3 재조정판(추종 우선) + 발 들기 강화 + 대각선 trot + foothold(저가중) ──
+        self.rewards.track_lin_vel_xy.weight = 3.0
+        self.rewards.track_ang_vel_z.weight = 2.0
+        self.rewards.flat_orientation_l2.weight = -4.0
+        # feet_air_time: 짧은 스텝 페널티 성격(실현값 음수) → 가중치↑ = 보폭·체공 늘리는 압력
+        self.rewards.feet_air_time.weight = 0.5
+        foot = SceneEntityCfg("robot", body_names=".*_foot")
+        hs = SceneEntityCfg("foot_scan")
+        cs = SceneEntityCfg("contact_forces", body_names=".*_foot")
+        # 대각선 trot (base RewardsCfg 엔 없음 → 신설. offset[0,.5,.5,0]=FL+RR/FR+RL)
+        self.rewards.feet_gait = RewTerm(
+            func=mdp.feet_gait, weight=0.75,
+            params={"period": 0.5, "offset": [0.0, 0.5, 0.5, 0.0], "sensor_cfg": cs,
+                    "threshold": 0.5, "command_name": "base_velocity"},
+        )
+        # foothold 2종 (motion-gated — 정지 편법 차단 검증됨). teacher 가 디딤돌·gap 에서
+        # 발을 골라 딛어야 Phase 2 데이터가 '정답 foothold' 를 담음. 기형 재발 시 1번 제거 knob.
+        self.rewards.foot_clearance_terrain = RewTerm(
+            func=mdp.foot_clearance_terrain, weight=0.6,
+            params={"height_sensor_cfg": hs, "asset_cfg": foot,
+                    "target_clearance": 0.10, "std": 0.03, "tanh_mult": 4.0},
+        )
+        self.rewards.foothold_safety = RewTerm(
+            func=mdp.foothold_safety, weight=0.35,
+            params={"height_sensor_cfg": hs, "contact_sensor_cfg": cs, "asset_cfg": foot,
+                    "edge_scale": 12.0, "vel_gate": 0.2},
+        )
+
+
+@configclass
+class JELocoTeacherPlayEnvCfg(JELocoTeacherEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        if self.scene.terrain.terrain_generator is not None:
+            self.scene.terrain.terrain_generator.num_rows = 10
+            self.scene.terrain.terrain_generator.num_cols = 8
+            self.scene.terrain.terrain_generator.curriculum = True
+        self.scene.terrain.max_init_terrain_level = 5
+        self.observations.policy.enable_corruption = False
+        self.events.push_robot = None

@@ -35,3 +35,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.agent_cfg:JELocoPCPPORunnerCfg",
     },
 )
+
+# Phase 1 Teacher — privileged heightmap actor, 순정 MLP PPO (pc·GRU 없음). Phase 2 데이터 공장.
+gym.register(
+    id="Unitree-Go2-JELoco-Teacher",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_cfg:JELocoTeacherEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.env_cfg:JELocoTeacherPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
