@@ -43,6 +43,10 @@ class PCModelCfg(RslRlRNNModelCfg):
     # runner 도 actor 에서 이 플래그를 읽으므로 불일치 불가능.
     jepa_cond_command: bool = False
     jepa_cond_action: bool = False
+    # Phase 3 — 사전학습 인코더(pretrain_repr.py 산출) 로드·동결. "" = scratch(랜덤 초기화).
+    # 3-way 비교: jepa_v1 / recon_v1 / "" — 유일 변수 = 인코더 초기화. repr_head 는 "none".
+    pretrained_encoder: str = ""
+    freeze_encoder: bool = True
 
 
 @configclass

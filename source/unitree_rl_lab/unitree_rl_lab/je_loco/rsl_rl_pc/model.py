@@ -83,6 +83,8 @@ class PointCloudRNNModel(RNNModel):
         proj_dim: int = 128,
         jepa_cond_command: bool = False,   # predictor 에 명령 c_t(3) 조건
         jepa_cond_action: bool = False,    # predictor 에 지평 평균행동(12) 조건
+        pretrained_encoder: str = "",      # Phase 3: 사전학습 pc_encoder.pt 경로 ("" = scratch)
+        freeze_encoder: bool = True,       # 사전학습 인코더 동결(RL gradient 차단)
         **kwargs,
     ) -> None:
         # _get_obs_dim(super 초기화 중 호출)이 참조 → super 전에 세팅
@@ -97,6 +99,21 @@ class PointCloudRNNModel(RNNModel):
         super().__init__(obs, obs_groups, obs_set, output_dim, **kwargs)
 
         self.pc_encoder = PointCloudEncoder(self._pc_num_points, pc_out_dim)
+
+        # ── Phase 3: 사전학습 인코더 로드 + 동결 (jepa/recon/scratch 3-way 비교의 유일 변수) ──
+        # pretrain_repr.py 산출물(pc_encoder.pt)을 그대로 로드. freeze 시 RL gradient 가
+        # 인코더를 안 건드림 → "사전학습 표현이 정책에 얼마나 유용한가"만 측정됨.
+        self._encoder_frozen = False
+        if pretrained_encoder:
+            sd = torch.load(pretrained_encoder, map_location="cpu", weights_only=False)
+            self.pc_encoder.load_state_dict(sd)
+            print(f"[JELoco] pretrained pc_encoder 로드: {pretrained_encoder}")
+            if freeze_encoder:
+                for p in self.pc_encoder.parameters():
+                    p.requires_grad_(False)
+                self.pc_encoder.eval()
+                self._encoder_frozen = True
+                print("[JELoco] pc_encoder FROZEN (RL gradient 차단)")
 
         # ── 고유수용 백본 (actor 공통, 두 헤드 동일) ──────────────────────────
         # proprio(H=5 히스토리) → z_p, 그리고 v̂ = vel_decoder(z_p) (CENet).
@@ -174,6 +191,13 @@ class PointCloudRNNModel(RNNModel):
             T, N, D = x.shape
             return enc(x.reshape(T * N, D)).reshape(T, N, -1)
         return enc(x)
+
+    def train(self, mode: bool = True):
+        """동결된 pc_encoder 는 항상 eval 유지 (runner 의 train_mode() 가 되돌리지 못하게)."""
+        super().train(mode)
+        if getattr(self, "_encoder_frozen", False):
+            self.pc_encoder.eval()
+        return self
 
     def get_latent(self, obs, masks=None, hidden_state: HiddenState = None):
         """[z_p, z_e] concat → 정규화 → GRU."""
