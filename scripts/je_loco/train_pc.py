@@ -62,6 +62,10 @@ args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video:
     args_cli.enable_cameras = True
 
+# 실행 명령 원본 보존 — 아래에서 hydra 용으로 sys.argv 를 덮어쓰므로, 그 전에 저장해야
+# CLI 인자(--task/--num_envs/--seed …)가 남는다. log_dir/params/command.txt 로 기록됨.
+_ORIG_ARGV = list(sys.argv)
+
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
 
@@ -96,6 +100,7 @@ if args_cli.distributed and version.parse(installed_version) < version.parse(RSL
 import gymnasium as gym
 import inspect
 import os
+import shlex
 import shutil
 import torch
 from datetime import datetime
@@ -208,6 +213,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
+    # 실행 명령·환경 스냅샷 저장 — env.yaml/agent.yaml 은 '최종 설정값'만 담고 "어떻게 호출했는지"
+    # (CLI 인자·hydra override)는 안 남아, 나중에 run 재현·대조 시 이 파일이 유일한 근거가 된다.
+    with open(os.path.join(log_dir, "params", "command.txt"), "w") as _f:
+        _f.write("# command\n")
+        _f.write(" ".join(shlex.quote(a) for a in _ORIG_ARGV) + "\n\n")
+        _f.write("# context\n")
+        _f.write(f"cwd:      {os.getcwd()}\n")
+        _f.write(f"host:     {platform.node()}\n")
+        _f.write(f"time:     {datetime.now().isoformat(timespec='seconds')}\n")
+        _f.write(f"python:   {sys.executable}\n")
+        _f.write(f"conda:    {os.environ.get('CONDA_DEFAULT_ENV', '<none>')}\n")
     export_deploy_cfg(env.unwrapped, log_dir)
     # copy the environment configuration file to the log directory
     shutil.copy(
