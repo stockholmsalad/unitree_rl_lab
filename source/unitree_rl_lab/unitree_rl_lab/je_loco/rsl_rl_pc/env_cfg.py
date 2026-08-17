@@ -315,10 +315,24 @@ class JELocoPCFootholdEnvCfg(JELocoPCEnvCfg):
         self.rewards.flat_orientation_l2.weight = -4.0  # 자세 불안정 억제 (기본 −2.5)
         self.rewards.foot_clearance_terrain.weight = 0.6   # 발동작 비중↓ (1.0→0.6)
         self.rewards.foothold_safety.weight = 0.35         # 〃 (0.5→0.35)
-        # ① 명령 속도: ranges(시작)는 0.5~0.8, limit(커리큘럼 상한)만 1.5 → 서서히 빨라짐(점진).
+
+        # ★★ teacher 와 정합 (2026-08-17 play 진단): student 셋(jepa/recon/scratch) 모두 다리를
+        # 바깥으로 벌린 '거미 자세'로 수렴 → 표현 비교가 오염됨. 원인 = 조상 JELocoPCEnvCfg 의
+        # 옛 설정 잔재를 물려받은 것. teacher(RobotEnvCfg 직접 상속)는 순정값이라 멀쩡했음.
+        #   joint_pos −0.3 → −0.7 : 기본자세 이탈 페널티. 약하면 지지다각형 넓히기로 도망감(거미).
+        #   action_rate −0.05 → −0.1 : 순정값 복원(동작 부드러움).
+        #   명령: 회전·횡이동 복원 — 0 으로 막으면 회전을 못 배워 지형서 몸 틀어져도 못 잡음.
+        self.rewards.joint_pos.weight = -0.7
+        self.rewards.action_rate.weight = -0.1
+        self.rewards.feet_air_time.weight = 0.5   # 발 시원하게 들기(teacher 와 동일. 옛 0.25 잔재)
         cmd = self.commands.base_velocity
-        cmd.ranges.lin_vel_x = (0.5, 0.8)
-        cmd.limit_ranges.lin_vel_x = (0.5, 1.5)
+        cmd.rel_standing_envs = 0.05
+        cmd.ranges.lin_vel_x = (0.0, 0.8)
+        cmd.limit_ranges.lin_vel_x = (0.0, 1.5)
+        cmd.ranges.lin_vel_y = (-0.2, 0.2)
+        cmd.limit_ranges.lin_vel_y = (-0.4, 0.4)
+        cmd.ranges.ang_vel_z = (-0.5, 0.5)
+        cmd.limit_ranges.ang_vel_z = (-1.0, 1.0)
 
 
 @configclass
