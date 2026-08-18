@@ -9,7 +9,14 @@ recurrent(GRU) 이므로 num_steps_per_env=32 (working 계단 실험과 동일).
 from __future__ import annotations
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg, RslRlRNNModelCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlDistillationAlgorithmCfg,
+    RslRlDistillationRunnerCfg,
+    RslRlMLPModelCfg,
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoAlgorithmCfg,
+    RslRlRNNModelCfg,
+)
 
 _PC_MODEL = "unitree_rl_lab.je_loco.rsl_rl_pc.model:PointCloudRNNModel"
 
@@ -112,4 +119,64 @@ class JELocoPCPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase 3b — DAgger 증류 RunnerCfg (2026-08-18)
+#
+# rsl_rl 5.0.1 `Distillation` = 정확히 DAgger: 환경을 student 행동으로 굴리고(act 에서
+# stochastic_output=True), 같은 관측으로 teacher 를 질의해 privileged_actions 로 저장, 손실은
+# MSE(student(obs), teacher_actions). gradient_length = truncated BPTT 창.
+#
+# 비교 축 = **student 인코더 초기화**(jepa_v1 / recon_v1 / "" ) — 나머지 전부 동일.
+# 동결 여부는 freeze_encoder 로 별도 축(DeFM 의 frozen vs finetuned 대조에 대응).
+# ═════════════════════════════════════════════════════════════════════════════
+@configclass
+class TeacherMLPCfg(RslRlMLPModelCfg):
+    """Phase 1 teacher(`BasePPORunnerCfg.policy`) actor 와 **동일 구조** — 체크포인트
+    `actor_state_dict` 를 그대로 로드하므로 hidden_dims·activation 이 어긋나면 안 된다."""
+
+    hidden_dims: list[int] = [512, 256, 128]
+    activation: str = "elu"
+    obs_normalization: bool = False          # teacher 학습 시 empirical_normalization=False
+    stochastic: bool = True
+    init_noise_std: float = 1.0
+    noise_std_type: str = "scalar"
+    state_dependent_std: bool = False
+
+
+@configclass
+class JELocoDistillRunnerCfg(RslRlDistillationRunnerCfg):
+    num_steps_per_env = 32          # recurrent student → 긴 시퀀스 (PPO 쪽과 동일)
+    max_iterations = 8000
+    save_interval = 200
+    experiment_name = "je_loco_distill"
+    empirical_normalization = False
+
+    # student 는 pc+proprio(배포 가능), teacher 는 privileged heightmap 232.
+    obs_groups = {
+        "student": ["policy", "pointcloud"],
+        "teacher": ["teacher"],
+    }
+
+    # 학생 = 기존 PointCloudRNNModel 그대로(GRU+PointNet). repr_head="none" — 증류에선 표현
+    # 보조손실을 쓰지 않는다(행동 감독이 주 신호이고, 인코더 초기화만이 비교 변수여야 함).
+    # init_noise_std 0.1: 롤아웃 탐색용 소량 행동 노이즈. 문헌(Parkour in the Wild)이 증류 중
+    # action noise 를 권장 — 이후 RL fine-tune 안정성에도 기여.
+    student: PCModelCfg = PCModelCfg(
+        hidden_dims=[256, 128], activation="elu", obs_normalization=False,
+        stochastic=True, init_noise_std=0.1, noise_std_type="scalar", state_dependent_std=False,
+        repr_head="none",
+        pretrained_encoder="", freeze_encoder=False,
+    )
+    teacher: TeacherMLPCfg = TeacherMLPCfg()
+
+    algorithm: RslRlDistillationAlgorithmCfg = RslRlDistillationAlgorithmCfg(
+        num_learning_epochs=1,
+        learning_rate=1.0e-3,
+        gradient_length=15,     # Agarwal CoRL 2022 의 24-step 언롤과 같은 자리의 knob
+        max_grad_norm=1.0,
+        loss_type="mse",
+        optimizer="adam",
     )

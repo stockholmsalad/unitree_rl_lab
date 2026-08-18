@@ -511,3 +511,80 @@ class JELocoTeacherPlayEnvCfg(JELocoTeacherEnvCfg):
         self.scene.terrain.max_init_terrain_level = 5
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Phase 3b — DAgger 증류 (2026-08-18 전환)
+#
+# 배경: Phase 3(인코더 동결 + PPO 재학습)은 **세 조건 모두 제대로 못 걷는** 결과로 끝났다
+# (S2 iter 4000: 지표·육안 모두 무차별, teacher 는 잘 걸음). LITERATURE.md 축 3 이 그대로
+# 예측한 실패 — 우리가 **행동 감독**과 **on-policy 보정**을 둘 다 뺐기 때문. 표준 레시피는
+# DAgger: 환경을 [학생 행동]으로 굴리고 방문 상태마다 teacher 에게 a_t 를 물어 ‖â−a‖² 최소화.
+#
+# 연구질문은 유지된다 — jepa/recon/scratch 를 **인코더 초기화**로 비교. 이는 DeFM(2026) 의
+# 설계와 동일(동결 DeFM vs scratch CNN, 단 distillation 안에서). 차이가 날 자리는 결손 평가.
+#
+# 관측 그룹: student = policy(45×5) + pointcloud(768) / teacher = teacher(45+187=232)
+# ═════════════════════════════════════════════════════════════════════════════
+@configclass
+class DistillObservationsCfg(PCObservationsCfg):
+    """PC 관측(학생) + teacher 관측 그룹을 **한 env 에서 동시** 제공."""
+
+    @configclass
+    class TeacherCfg(ObservationsCfg.PolicyCfg):
+        """Phase 1 teacher 가 학습 때 본 것과 **완전히 동일**해야 한다(45 + 187 = 232).
+
+        - 항목 순서: ObservationsCfg.PolicyCfg 6항 + height_scan (TeacherObservationsCfg 와 동일한
+          상속 방식이라 dataclass 필드 순서가 그대로 재현됨).
+        - history 없음(H=1): teacher env 는 policy 그룹에 history_length 를 설정하지 않았다.
+          (이 env 의 `policy` 그룹은 학생용이라 history_length=5 — 별도 그룹이라 충돌 없음.)
+        - corruption: PolicyCfg.__post_init__ 이 True 로 켬 = teacher 학습 시와 동일한 noise.
+          라벨 분포를 학습 때와 맞추기 위해 그대로 둔다.
+        """
+
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("teacher_scanner"), "offset": 0.0},
+            clip=(-1.0, 1.5),
+        )
+
+    teacher: TeacherCfg = TeacherCfg()
+
+
+@configclass
+class JELocoDistillEnvCfg(JELocoPCFootholdEnvCfg):
+    """Foothold env + teacher 관측. 보상·지형·명령은 Foothold 와 동일(증류엔 보상 미사용이나
+    커리큘럼·종료조건이 동일해야 teacher 가 자기 학습 분포와 비슷한 상태를 본다)."""
+
+    observations: DistillObservationsCfg = DistillObservationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # ── teacher 전용 스캐너 ────────────────────────────────────────────
+        # Phase 1 teacher 학습 시 geometry 와 **정확히 동일**해야 체크포인트가 의미를 갖는다:
+        #   RobotEnvCfg 기본 격자(resolution 0.1, size [1.6,1.0] → 17×11 = 187, **기본 ordering**)
+        #   + JELocoTeacherEnvCfg 의 전방 이동 offset (0.3, 0, 20).
+        # 이 env 의 `height_scanner` 는 Head A 재구성 타깃용(144, ordering="yx", offset 1.25)이라
+        # 재사용 불가 — 반드시 별도 센서.
+        self.scene.teacher_scanner = RayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base",
+            offset=RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 20.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground"],
+        )
+        self.scene.teacher_scanner.update_period = self.decimation * self.sim.dt
+
+
+@configclass
+class JELocoDistillPlayEnvCfg(JELocoDistillEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.max_init_terrain_level = 3
+        self.observations.policy.enable_corruption = False
+        self.observations.pointcloud.enable_corruption = False
+        self.observations.teacher.enable_corruption = False
+        self.events.push_robot = None

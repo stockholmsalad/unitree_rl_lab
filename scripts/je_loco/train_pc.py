@@ -51,6 +51,15 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
+# Phase 3b — DAgger 증류: teacher 체크포인트를 경로로 직접 지정한다.
+# (rsl_rl 의 load_run/load_checkpoint 는 이 run 의 experiment_name 하위만 뒤지는데, teacher 는
+#  다른 실험 폴더(logs/rsl_rl/unitree_go2_jeloco_teacher/...)에 있어 그 경로로는 못 찾는다.)
+parser.add_argument(
+    "--teacher_checkpoint",
+    type=str,
+    default=None,
+    help="Distillation 전용: Phase 1 teacher 체크포인트(.pt) 경로. actor_state_dict 를 teacher 로 로드.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -104,6 +113,8 @@ import shlex
 import shutil
 import torch
 from datetime import datetime
+
+from rsl_rl.runners import DistillationRunner
 
 from unitree_rl_lab.je_loco.rsl_rl_pc.runner import JELocoOnPolicyRunner  # velocity aux 손실 포함
 
@@ -177,8 +188,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    # Phase 3b — 증류인가? (agent_cfg 에 teacher 필드가 있으면 DistillationRunnerCfg)
+    is_distill = getattr(agent_cfg.algorithm, "class_name", "") == "Distillation"
+
     # save resume path before creating a new log_dir
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    resume_path = None
+    if is_distill:
+        # teacher 는 다른 실험 폴더에 있으므로 CLI 경로를 우선한다.
+        if args_cli.teacher_checkpoint is None:
+            raise ValueError(
+                "Distillation 은 teacher 체크포인트가 필요합니다. --teacher_checkpoint <경로.pt> 를 지정하세요."
+            )
+        resume_path = os.path.abspath(args_cli.teacher_checkpoint)
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(f"teacher 체크포인트를 찾을 수 없습니다: {resume_path}")
+    elif agent_cfg.resume:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
@@ -200,14 +224,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # model config required by the installed rsl-rl-lib (>= 4.0.0)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
 
-    # create runner from rsl-rl (velocity aux 손실 포함 서브클래스)
-    runner = JELocoOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # create runner — 증류는 rsl_rl 순정 DistillationRunner(teacher 로드 검증 포함),
+    # 그 외는 velocity/표현 aux 손실을 얹은 JELocoOnPolicyRunner.
+    if is_distill:
+        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    else:
+        runner = JELocoOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if resume_path is not None:
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-        # load previously trained model
+        # 증류: Distillation.load 가 actor_state_dict 를 teacher 로 자동 적재(student 는 건드리지 않음).
+        # 그 외: 기존 resume 동작.
         runner.load(resume_path)
 
     # dump the configuration into log-directory

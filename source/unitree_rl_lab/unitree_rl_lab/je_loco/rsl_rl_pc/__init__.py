@@ -36,6 +36,20 @@ gym.register(
     },
 )
 
+# Phase 3b — DAgger 증류. Foothold env + teacher 관측 그룹(232). student=pc+proprio.
+# 비교 축 = student 인코더 초기화(jepa/recon/scratch). teacher 체크포인트는
+# train_pc.py --teacher_checkpoint 로 지정.
+gym.register(
+    id="Unitree-Go2-JELoco-Distill",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_cfg:JELocoDistillEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.env_cfg:JELocoDistillPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.agent_cfg:JELocoDistillRunnerCfg",
+    },
+)
+
 # Phase 1 Teacher — privileged heightmap actor, 순정 MLP PPO (pc·GRU 없음). Phase 2 데이터 공장.
 gym.register(
     id="Unitree-Go2-JELoco-Teacher",
