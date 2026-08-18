@@ -334,3 +334,123 @@ teacher 는 **더 어려운 지형에서도** 자세를 붙잡는다:
 (A) 명령 커리큘럼이 1차처럼 jepa<recon<scratch 로 갈리는가(핵심 결과 재현),
 (B) jepa 자세이탈이 teacher 수준 0.75 로 수렴하는가 0.89 에 머무는가(동결의 대가).
 A 가 안 갈리면 1차의 6/6 분리가 거미 자세 아티팩트였다는 뜻 → 즉시 중단하고 헤드룸 개입으로 전환.
+
+---
+
+# ★ Phase 3 최종 판정 @ iter 4000 (2026-08-18) — 조건 간 차이 없음
+
+## 배선 검증 (무효 결과일 때 필수 선행 확인)
+
+인코더 가중치 md5 를 iter 0 ↔ 4000 으로 대조:
+
+| run | md5 @0 → @4000 | |
+|---|---|---|
+| jepa_s1/s2 | `2ce0f72e` → `2ce0f72e` | **동결 확인**, `pretrained/jepa_v1` 과 일치 |
+| recon_s1/s2 | `995e188e` → `995e188e` | **동결 확인**, `pretrained/recon_v1` 과 일치 |
+| scratch_s1/s2 | `a4dd5bab` → `646d31a0` | 학습 중(의도대로) |
+
+세 조건 인코더 상호 상이. **로딩·동결 정상 → 무효 결과는 버그가 아니다.**
+
+## A 판정 — 1차의 6/6 분리는 **거미 자세 아티팩트였다**
+
+명령 커리큘럼 포화 iter:
+
+| | 1차 S (거미 오염) | **2차 S2 (자세 수정)** |
+|---|---|---|
+| jepa | 938 / 2,625 → **1,782** | 2,594 / 3,094 → **2,844** |
+| recon | 3,032 / 3,438 → **3,235** | 1,407 / 2,594 → **2,001** |
+| scratch | 4,625 / 5,250 → **4,938** | 1,782 / 2,719 → **2,251** |
+| | **6/6 완전 분리(p≈0.011)** | **완전히 뒤섞임, 순서 역전** |
+
+2차는 6런이 1,407~3,094 에 흩어져 조건 간 겹침이 완전하고, @4000 에 **전 런 1.5 포화**.
+
+**보행 버그 하나를 고치자 p≈0.011 짜리 결과가 증발했다.** 이 프로젝트에서 통제를 조일 때마다
+결과가 사라진 게 **두 번째**(① sentinel 아티팩트 ② 거미 자세). 방법론 교훈으로 기록할 가치가 있음.
+
+## B 판정 — 자세는 수렴(800 의 경보는 일시현상)
+
+| | @800 | @2500 | @4030 | teacher |
+|---|---|---|---|---|
+| jepa | 0.891 | 0.699 | **0.749** | 0.743~0.787 |
+| recon | 0.876 | 0.810 | **0.762** | |
+| scratch | 0.734 | 0.668 | **0.661** | |
+
+jepa 가 teacher 수준으로 내려옴. scratch 가 가장 조이나 격차가 0.157 → 0.088 로 축소.
+
+## 나머지 전부 동률 (@4030)
+
+| | reward | err_vxy | 넘어짐 | terrain | feet_gait(÷.75) |
+|---|---|---|---|---|---|
+| jepa | 71.5 | 0.499 | 0.059 | 2.868 | 1.595 |
+| recon | 73.4 | 0.492 | 0.076 | 2.894 | 1.611 |
+| scratch | 74.1 | 0.469 | 0.077 | 2.920 | 1.583 |
+
+(`feet_gait` 는 여전히 "가만히 서 있기" 2.0 아래 — 결함 그대로.)
+
+## play 육안 (사용자, iter 4000, 지형 매칭됨)
+
+> **"scratch 가 그나마 낫긴 한데 그래도 셋 다 별로야"**
+
+지표와 일치. 그리고 **"셋 다 별로"가 더 중요한 정보** — teacher 는 잘 걷는데 학생은 인코더를
+뭘 쓰든 못 걷는다. **표현 문제가 아니라 Phase 3 구조 문제.**
+
+---
+
+# Phase 3b — DAgger 증류로 전환 (2026-08-18)
+
+## 근거
+
+LITERATURE.md 축 3 이 그대로 예측한 실패 — 우리는 표준 레시피에서 **행동 감독**과
+**on-policy 보정**을 둘 다 뺐다. 「Now You See That」(2026): depth end-to-end RL **54.0%** vs
+privileged distillation **98.9%**. 조사자 원문: *"불투명한 인코더를 동결하고 그 위에서 새로
+RL 을 돌리는 논문을 legged 분야에서 하나도 찾지 못했다."*
+
+**두 정책이 다 못 걸을 때 "어느 표현이 나은가"는 답할 수 없는 질문이다.**
+
+## 설계 — 연구질문은 유지된다
+
+```
+환경을 [학생 행동]으로 굴림 → 방문 상태마다 teacher 질의 → MSE(student(obs), a_teacher)
+비교 축 = 학생 **인코더 초기화** (jepa_v1 / recon_v1 / scratch)
+```
+
+이는 **DeFM(2026) 의 설계 그대로** — 동결 DeFM vs scratch CNN 을 **distillation 안에서** 비교
+(거기선 90.14 vs 90.45 무승부). 무승부여도 이번엔 **"셋 다 잘 걷는 무승부"**라 의미가 있다.
+**차이가 날 자리는 결손 평가** — DeFM 도 OOD(Kinect 노이즈)에서 갈렸다(0.876 vs 0.486).
+
+## 구현 (task `Unitree-Go2-JELoco-Distill`)
+
+- `JELocoDistillEnvCfg` = Foothold env + **teacher 관측 그룹**(45 proprio + 187 heightmap = 232).
+  **전용 `teacher_scanner` 필수** — 이 env 의 `height_scanner` 는 Head A 재구성용
+  (144, ordering="yx", offset 1.25)이라 재사용하면 **조용히 틀린 값**이 teacher 에 들어간다.
+  teacher 학습 geometry 복제: resolution 0.1, size [1.6,1.0], **기본 ordering**, offset (0.3,0,20).
+- `JELocoDistillRunnerCfg`: student = 기존 `PointCloudRNNModel`(repr_head="none",
+  init_noise_std 0.1), teacher = MLP [512,256,128] elu (Phase 1 체크포인트 호환).
+  `freeze_encoder=False` 기본(문헌상 fine-tune > frozen; 동결 arm 은 별도 축).
+- `train_pc.py --teacher_checkpoint <경로.pt>` — teacher 는 다른 실험 폴더에 있어
+  rsl_rl 의 load_run/load_checkpoint 로는 못 찾는다. `Distillation.load` 가 `actor_state_dict`
+  를 teacher 로 자동 적재(student 는 건드리지 않음).
+- `run_distill_matrix.sh` — **GPU 메모리 기반 병렬 슬롯**. 런당 ≈ 3000 MiB + 8 MiB × env
+  (1024 env = 11.2 GB 실측). 가드 없이 16GB 에서 6런 띄웠다가 **5런 CUDA OOM 사망**(2026-08-18).
+
+## 스모크 검증 (Z790, 1024 env)
+
+teacher `in_features=232` 확인, 체크포인트 로드 정상, student GRU(96)=z_e64+z_p32 확인.
+
+| iter | behavior loss | reward | ep_len |
+|---|---|---|---|
+| 0 | 0.62 | 0.8 | 16 |
+| **3** | **15.15** ← 최고점 | | |
+| 60 | 1.05 | 11.6 | 202 |
+| **114** | **0.71** | **51.8** | **864** |
+
+**초기 손실 급등은 정상** — 손실은 학생이 실제 방문한 상태에서 재므로, 학생이 오래 버틸수록
+더 어려운 상태에 도달해 teacher 의 교정 행동이 커진다. reward 는 계속 상승했다.
+**iter 114 에 ep_len 864 = S2 PPO 가 800 iter 걸린 수준. 약 7배 빠름.**
+
+## 진행 중
+
+`D_{jepa,recon,scratch}_s{1,2}` 6런, pilab, 1024 env, 8000 iter.
+**판정 지표 = `Loss/behavior` 조건별 격차.**
+확인 지점: iter ~500(`bad_orientation` 0.86 에서 내려가는가) → ~2000(조건 격차).
+안 내려가면 knob = `num_steps_per_env` 32→64(공식 예제 120), `learning_rate` 1e-3→3e-4.
