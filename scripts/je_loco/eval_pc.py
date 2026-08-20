@@ -51,7 +51,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
 from isaaclab_tasks.utils import get_checkpoint_path
-from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 import unitree_rl_lab.tasks  # noqa: F401
 import unitree_rl_lab.je_loco.rsl_rl_pc  # noqa: F401
@@ -130,10 +130,18 @@ def main():
         print(f"[eval] terrain_level 강제 = {lv} (max {terr.max_terrain_level-1}) — 어려운 지형")
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, version("rsl-rl-lib"))
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    runner.load(resume_path,
-                load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False},
-                strict=False)
+    # 증류 체크포인트는 키가 student/teacher_state_dict 라 OnPolicyRunner 로는 못 읽는다.
+    # (2026-08-20: play_pc.py 만 고쳐져 있었고 eval 은 누락 — 그대로 돌리면 정책이 로드되지 않아
+    #  모든 조건이 똑같이 무너지는 '가짜 무승부' 곡선이 나온다.)
+    if getattr(agent_cfg.algorithm, "class_name", "") == "Distillation":
+        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner.load(resume_path, load_cfg={"student": True, "teacher": True,
+                                           "optimizer": False, "iteration": False}, strict=False)
+    else:
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner.load(resume_path,
+                    load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False},
+                    strict=False)
     policy = runner.get_inference_policy(device=uenv.device)
     robot = uenv.scene["robot"]
 
