@@ -168,3 +168,159 @@ DEGRADATIONS = {
     "hole": hole_pointcloud,
     "occlusion": occlude_pointcloud,
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 시간적 결손 (2026-08-20 추가) — 게이트 3
+#
+# 위 3종은 전부 **공간** 마스킹이고 매 프레임 독립이다. 그래서 공간 복원을 학습한 Head A 에
+# 유리하게 짜여 있다. Head B(JEPA)가 학습한 건 **시간 구조**(z_e(t)→z_e(t+k))이므로,
+# 원리상 우위가 나와야 하는 자리는 **관측이 시간적으로 끊기는** 고장이다.
+#
+#   freeze   = 확률적 프레임 드롭 (센서가 갱신 실패 → 직전 프레임 유지)
+#   latency  = 관측이 d 스텝 지연 도착 (파이프라인 지연)
+#   lowfps   = 결정론적 저프레임레이트 (D435i 30fps vs 제어 50Hz — 실기 상시 조건)
+#
+# 셋 다 level=0 에서 **정확히 항등**이라 게이트 1(대등성) 비교가 그대로 성립한다.
+# 공간 결손과 달리 상태를 들고 있어야 하므로 함수가 아니라 객체다. eval 루프는
+#   d.reset() → 매 스텝 d(pc, level) → env.step 후 d.notify_done(dones)
+# 순서로 쓴다. notify_done 이 없으면 리셋된 env 가 **이전 에피소드 지형의 프레임**을 물고
+# 있게 되어(순간이동) 결손이 아니라 시뮬 아티팩트를 측정하게 된다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+LATENCY_MAX_STEPS = 10   # level 1.0 = 10 스텝 지연 (50Hz 기준 0.2s)
+LOWFPS_MAX_STRIDE = 10   # level 1.0 = 10 스텝마다 1회 갱신 (50Hz → 5Hz)
+
+
+class _StatelessDegradation:
+    """공간 결손(프레임 독립) 래퍼 — eval 루프가 한 가지 인터페이스만 쓰게 한다."""
+
+    temporal = False
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def reset(self) -> None:
+        pass
+
+    def notify_done(self, dones) -> None:
+        pass
+
+    def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
+        return self._fn(pc_flat, level)
+
+
+class _TemporalDegradation:
+    """시간 결손 공통 뼈대: 프레임 버퍼 + 에피소드 경계 처리."""
+
+    temporal = True
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._buf = None        # (N, D) 마지막으로 정책에 준 프레임
+        self._force = None      # (N,) True = 다음 호출에서 무조건 최신 프레임 채택
+        self._t = 0
+
+    def _ensure(self, pc_flat: torch.Tensor) -> None:
+        if self._buf is None or self._buf.shape != pc_flat.shape:
+            self._buf = pc_flat.clone()
+            self._force = torch.ones(pc_flat.shape[0], dtype=torch.bool, device=pc_flat.device)
+
+    def notify_done(self, dones) -> None:
+        """리셋된 env 는 이전 지형의 stale 프레임을 버리고 다음 관측을 즉시 채택."""
+        if self._force is not None and dones is not None:
+            self._force |= dones.reshape(-1).bool().to(self._force.device)
+
+    def _commit(self, pc_flat: torch.Tensor, update: torch.Tensor) -> torch.Tensor:
+        upd = update | self._force
+        self._buf[upd] = pc_flat[upd]
+        self._force = torch.zeros_like(self._force)
+        self._t += 1
+        return self._buf.clone()
+
+
+class FreezeDegradation(_TemporalDegradation):
+    """확률적 프레임 드롭: 매 스텝 확률 `level` 로 갱신 실패 → 직전 프레임 유지.
+
+    level=0 항등(항상 갱신) · level=1.0 완전 정지(에피소드 첫 프레임에 고정).
+    실기의 USB 대역폭 부족·간헐 드롭 모사. env 마다 독립.
+    """
+
+    def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
+        self._ensure(pc_flat)
+        if level <= 0.0:
+            return self._commit(pc_flat, torch.ones_like(self._force))
+        upd = torch.rand(pc_flat.shape[0], device=pc_flat.device) >= level
+        return self._commit(pc_flat, upd)
+
+
+class LowFpsDegradation(_TemporalDegradation):
+    """결정론적 저프레임레이트: stride 스텝마다 1회만 갱신.
+
+    stride = 1 + round(level × (LOWFPS_MAX_STRIDE − 1)) → level=0 은 50Hz(항등),
+    level=1.0 은 5Hz. **실기 D435i 30fps 는 제어 50Hz 대비 stride≈1.67 로 이미 이 축 위에 있다.**
+    """
+
+    def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
+        self._ensure(pc_flat)
+        stride = 1 + int(round(max(0.0, level) * (LOWFPS_MAX_STRIDE - 1)))
+        hit = (self._t % stride) == 0
+        upd = torch.full_like(self._force, bool(hit))
+        return self._commit(pc_flat, upd)
+
+
+class LatencyDegradation(_TemporalDegradation):
+    """관측 지연: d = round(level × LATENCY_MAX_STEPS) 스텝 전 프레임을 정책에 준다.
+
+    level=0 항등. 에피소드 시작 직후(이력이 d 스텝에 못 미침)에는 지연시킬 과거가 없으므로
+    현재 프레임을 준다 — 없는 데이터를 지어내지 않는다.
+    """
+
+    def reset(self) -> None:
+        super().reset()
+        self._hist = None      # (LATENCY_MAX_STEPS+1, N, D) 링버퍼
+        self._age = None       # (N,) 리셋 이후 경과 스텝
+
+    def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
+        n, d_dim = pc_flat.shape
+        cap = LATENCY_MAX_STEPS + 1
+        if self._hist is None or self._hist.shape[1:] != pc_flat.shape:
+            self._hist = pc_flat.unsqueeze(0).repeat(cap, 1, 1)
+            self._age = torch.zeros(n, dtype=torch.long, device=pc_flat.device)
+            self._force = torch.zeros(n, dtype=torch.bool, device=pc_flat.device)
+            self._t = 0
+        # 에피소드 리셋 env: 이력 폐기(현재 프레임으로 채움) + 나이 0
+        if self._force.any():
+            self._hist[:, self._force] = pc_flat[self._force].unsqueeze(0)
+            self._age[self._force] = 0
+            self._force = torch.zeros_like(self._force)
+
+        self._hist[self._t % cap] = pc_flat
+        delay = int(round(max(0.0, level) * LATENCY_MAX_STEPS))
+        self._t += 1
+        self._age += 1
+        if delay <= 0:
+            return pc_flat
+        past = self._hist[(self._t - 1 - delay) % cap]          # d 스텝 전 프레임
+        ready = (self._age > delay).unsqueeze(-1)                # 이력이 충분한 env 만 지연 적용
+        return torch.where(ready, past, pc_flat)
+
+
+TEMPORAL_DEGRADATIONS = {
+    "freeze": FreezeDegradation,
+    "latency": LatencyDegradation,
+    "lowfps": LowFpsDegradation,
+}
+
+ALL_DEGRADATIONS = tuple(DEGRADATIONS) + tuple(TEMPORAL_DEGRADATIONS)
+
+
+def make_degradation(name: str):
+    """이름 → 결손 객체(공간·시간 공통 인터페이스: reset / __call__ / notify_done)."""
+    if name in TEMPORAL_DEGRADATIONS:
+        return TEMPORAL_DEGRADATIONS[name]()
+    if name in DEGRADATIONS:
+        return _StatelessDegradation(DEGRADATIONS[name])
+    raise KeyError(f"알 수 없는 결손 '{name}' — 가능: {list(ALL_DEGRADATIONS)}")

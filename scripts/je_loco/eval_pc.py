@@ -26,8 +26,10 @@ parser.add_argument("--num_envs", type=int, default=256)
 parser.add_argument("--steps", type=int, default=1300, help="레벨당 측정 스텝(에피소드 1000 완주 위해 >1000)")
 parser.add_argument("--warmup", type=int, default=120, help="레벨 전환 후 측정 전 안정화 스텝")
 parser.add_argument("--dropout_levels", type=str, default="0.0", help="쉼표구분 결손 레벨 (예: 0,0.2,0.4,0.6,0.8,1.0)")
-parser.add_argument("--degradation", type=str, default="dropout", choices=["dropout", "hole", "occlusion"],
-                    help="결손 종류: dropout(i.i.d 점) · hole(블록) · occlusion(하단 대역). valid 채널 0=마스킹")
+parser.add_argument("--degradation", type=str, default="dropout",
+                    choices=["dropout", "hole", "occlusion", "freeze", "latency", "lowfps"],
+                    help="공간(프레임 독립): dropout(i.i.d 점) · hole(블록) · occlusion(하단 대역) — valid 채널 0=마스킹. "
+                         "시간(게이트 3): freeze(확률적 프레임 드롭) · latency(관측 지연) · lowfps(저프레임레이트).")
 parser.add_argument("--fix_terrain", action="store_true", default=True,
                     help="eval 중 terrain 커리큘럼 정지 → 지형 분포 고정(공정 비교, 논문용 기본 on)")
 parser.add_argument("--no_fix_terrain", dest="fix_terrain", action="store_false",
@@ -55,7 +57,7 @@ from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 import unitree_rl_lab.tasks  # noqa: F401
 import unitree_rl_lab.je_loco.rsl_rl_pc  # noqa: F401
-from unitree_rl_lab.je_loco.rsl_rl_pc.mdp_pc import DEGRADATIONS
+from unitree_rl_lab.je_loco.rsl_rl_pc.mdp_pc import make_degradation
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 torch.backends.cudnn.enabled = False
@@ -68,11 +70,15 @@ def run_level(env, uenv, policy, robot, dev, level, degrade_fn):
     ep_lens, falls, timeouts = [], 0, 0
     cur_len = torch.zeros(uenv.num_envs, device=dev)
     obs = env.get_observations()
+    degrade_fn.reset()          # 시간 결손: 레벨 간 프레임 버퍼 이월 차단(레벨끼리 독립)
     total = args_cli.warmup + args_cli.steps
     for t in range(total):
         with torch.inference_mode():
             obs["pointcloud"] = degrade_fn(obs["pointcloud"], level)   # 정책이 보는 점군에 결손
             obs, _, dones, extras = env.step(policy(obs))
+            # 리셋된 env 는 이전 지형의 stale 프레임을 버려야 한다(안 그러면 결손이 아니라
+            # '순간이동한 지형을 보는' 시뮬 아티팩트를 측정하게 됨). 공간 결손은 no-op.
+            degrade_fn.notify_done(dones)
         if t < args_cli.warmup:
             continue
         cmd = uenv.command_manager.get_command("base_velocity")
@@ -146,7 +152,8 @@ def main():
     robot = uenv.scene["robot"]
 
     deg = args_cli.degradation
-    degrade_fn = DEGRADATIONS[deg]                          # 마스킹: valid 채널 0 (좌표 무주입)
+    # 공간 결손 = 무상태 함수 래퍼, 시간 결손 = 프레임 버퍼를 든 객체. 인터페이스 동일.
+    degrade_fn = make_degradation(deg)
     levels = [float(x) for x in args_cli.dropout_levels.split(",")]
     print(f"[eval] {deg} 스윕 (마스킹): {levels}  "
           f"({uenv.num_envs} envs × {args_cli.steps} steps/level)")

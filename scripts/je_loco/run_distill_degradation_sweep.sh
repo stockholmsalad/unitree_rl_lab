@@ -7,7 +7,8 @@
 #   DeFM 도 in-distribution 무승부(90.14 vs 90.45), OOD 에서만 갈렸다(0.876 vs 0.486).
 #
 # 사용:
-#   bash scripts/je_loco/run_distill_degradation_sweep.sh              # 기본(6런×3결손)
+#   bash scripts/je_loco/run_distill_degradation_sweep.sh              # 기본(6런×공간3종)
+#   DEGS="freeze latency lowfps" OUTDIR=results/distill_temporal bash ...   # 게이트 3(시간 결손)
 #   ENVS=512 LEVELS=0,0.25,0.5,0.75,1.0 bash ... run_distill_degradation_sweep.sh
 #   TERRAIN_LEVEL=5 OUTDIR=results/deg_hard bash ... run_distill_degradation_sweep.sh
 #
@@ -21,7 +22,7 @@ ENVS=${ENVS:-256}            # 표본 수
 STEPS=${STEPS:-1500}         # 레벨당 측정 스텝(에피소드 1000 완주 위해 >1000)
 SEED=${SEED:-42}             # 모든 조건이 동일 지형을 밟게 — 공정 비교의 핵심
 LEVELS=${LEVELS:-0,0.2,0.4,0.6,0.8,1.0}
-DEGS=${DEGS:-"dropout hole occlusion"}
+DEGS=${DEGS:-"dropout hole occlusion"}   # 시간 결손: "freeze latency lowfps" (게이트 3)
 TERRAIN_LEVEL=${TERRAIN_LEVEL:--1}   # -1=max_init 분포(=3), N=전 env 강제 레벨 N
 OUTDIR=${OUTDIR:-results/distill_degradation}
 LOGROOT=logs/rsl_rl/je_loco_distill
