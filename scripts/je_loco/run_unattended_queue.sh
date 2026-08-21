@@ -3,7 +3,8 @@
 # 무인 실행 큐 — 자리를 비우는 동안 순차 실행 (2026-08-20)
 #
 #   Stage A. 시드 증설  : 3조건 × seed {3,4,5} = 9런 학습 (~2~3일)
-#   Stage B. 전체 재평가: 15런(기존6+신규9) × {occlusion, freeze, latency, lowfps} (~3~5시간)
+#   Stage B. 기본지형 평가: 15런(기존6+신규9) × {occlusion, freeze, latency, lowfps} (~6시간)
+#   Stage C. 어려운지형 평가: 같은 조합을 --terrain_level 5 로 (~6~8시간)
 #
 # 설계 원칙 — 무인이므로 "한 곳이 죽어도 나머지는 간다":
 #   · 각 스테이지는 독립. 앞 스테이지가 부분 실패해도 다음으로 넘어간다.
@@ -24,7 +25,7 @@ cd "$(dirname "$0")/../.."
 REPO=$(pwd)
 
 STATUS="${STATUS:-$HOME/jeloco_queue_status.txt}"
-STAGES="${STAGES:-A B}"
+STAGES="${STAGES:-A B C}"
 ITER="${ITER:-8000}"
 NEW_SEEDS="${NEW_SEEDS:-3 4 5}"
 NUM_ENVS="${NUM_ENVS:-1024}"
@@ -33,6 +34,7 @@ EVAL_ENVS="${EVAL_ENVS:-256}"
 EVAL_STEPS="${EVAL_STEPS:-1500}"
 LEVELS="${LEVELS:-0,0.2,0.4,0.6,0.8,1.0}"
 OUTDIR="${OUTDIR:-results/full_matrix}"
+HARD_LEVEL="${HARD_LEVEL:-5}"   # Stage C 강제 지형 레벨 (기본 지형은 평균 1.43 로 너무 쉬움)
 LOGROOT=logs/rsl_rl/je_loco_distill
 
 say() { echo "[$(date '+%m-%d %H:%M:%S')] $*"; echo "[$(date '+%m-%d %H:%M:%S')] $*" >> "$STATUS"; }
@@ -87,28 +89,46 @@ if [[ " $STAGES " == *" A "* ]]; then
   [ -n "$FAIL" ] && say "미완주:$FAIL"
 fi
 
-# ═══ Stage B — 전체 재평가 ══════════════════════════════════════════════════
-if [[ " $STAGES " == *" B "* ]]; then
-  LAST=$(( ITER - 1 ))
+# ═══ 평가 실행부 (Stage B/C 공용) ═══════════════════════════════════════════
+# $1 = 출력 디렉터리, $2 = 추가 인자(예: "--terrain_level 5")
+run_eval_stage() {
+  local out="$1" extra="$2"
+  local LAST=$(( ITER - 1 ))
   mapfile -t RUNS < <(for d in $LOGROOT/*/; do
       [ -f "$d/model_${LAST}.pt" ] && basename "$d"; done)
-  say "───── Stage B 시작: ${#RUNS[@]}런 × $(echo $EVAL_DEGS | wc -w)결손 = $(( ${#RUNS[@]} * $(echo $EVAL_DEGS | wc -w) ))회"
-  mkdir -p "$OUTDIR"
-  OK=0; NG=0
+  say "  ${#RUNS[@]}런 × $(echo $EVAL_DEGS | wc -w)결손 = $(( ${#RUNS[@]} * $(echo $EVAL_DEGS | wc -w) ))회 → $out ${extra:+[$extra]}"
+  mkdir -p "$out"
+  local OK=0 NG=0
   for DEG in $EVAL_DEGS; do
     for R in "${RUNS[@]}"; do
-      CSV="${DEG}_curve_${R}_model_${LAST}.csv"
-      if [ -f "$OUTDIR/$CSV" ]; then say "skip(이미 있음) $DEG/$R"; OK=$((OK+1)); continue; fi
+      local CSV="${DEG}_curve_${R}_model_${LAST}.csv"
+      if [ -f "$out/$CSV" ]; then OK=$((OK+1)); continue; fi   # 재실행 시 이어하기
       python -u scripts/je_loco/eval_pc.py --headless \
         --task Unitree-Go2-JELoco-Distill --num_envs "$EVAL_ENVS" --steps "$EVAL_STEPS" \
         --eval_seed 42 --degradation "$DEG" --dropout_levels "$LEVELS" \
-        --load_run "$R" --checkpoint "$LOGROOT/$R/model_${LAST}.pt" \
-        > "$OUTDIR/log_${DEG}_${R}.txt" 2>&1
-      if [ -f "$CSV" ]; then mv "$CSV" "$OUTDIR/"; OK=$((OK+1)); say "ok  $DEG/$R  ($OK)"
-      else NG=$((NG+1)); say "FAIL $DEG/$R — $OUTDIR/log_${DEG}_${R}.txt 확인"; fi
+        --load_run "$R" --checkpoint "$LOGROOT/$R/model_${LAST}.pt" $extra \
+        > "$out/log_${DEG}_${R}.txt" 2>&1
+      if [ -f "$CSV" ]; then mv "$CSV" "$out/"; OK=$((OK+1)); say "  ok  $DEG/$R ($OK)"
+      else NG=$((NG+1)); say "  FAIL $DEG/$R — $out/log_${DEG}_${R}.txt"; fi
     done
   done
-  say "Stage B 종료: 성공 $OK · 실패 $NG · CSV $(ls "$OUTDIR"/*.csv 2>/dev/null | wc -l)개"
+  say "  종료: 성공 $OK · 실패 $NG · CSV $(ls "$out"/*.csv 2>/dev/null | wc -l)개"
+}
+
+# ═══ Stage B — 기본 지형 재평가 ═════════════════════════════════════════════
+if [[ " $STAGES " == *" B "* ]]; then
+  say "───── Stage B: 기본 지형(max_init=3, 실측 평균 레벨 ≈1.43)"
+  run_eval_stage "$OUTDIR" ""
+fi
+
+# ═══ Stage C — 어려운 지형 재평가 ═══════════════════════════════════════════
+# 근거(2026-08-20 스모크): freeze 1.0(카메라 완전 정지)인데도 성공률 85.6% —
+# 기본 지형에서는 로봇이 고유수용성만으로 걷는다. 동적 범위 12pp 로는 조건 간 차이를
+# 드러낼 수 없다(dropout 이 판정력 없던 것과 같은 실패 양상).
+# 어려운 지형에서는 선행 지형 판단이 필수라 결손의 대가가 커진다 → 판정력 확보.
+if [[ " $STAGES " == *" C "* ]]; then
+  say "───── Stage C: 어려운 지형(--terrain_level $HARD_LEVEL) — 판정력 확보용"
+  run_eval_stage "${OUTDIR}_hard" "--terrain_level $HARD_LEVEL"
 fi
 
 say "큐 완료. 결과: $OUTDIR"
