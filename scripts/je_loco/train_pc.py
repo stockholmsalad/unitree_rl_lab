@@ -117,6 +117,7 @@ from datetime import datetime
 from rsl_rl.runners import DistillationRunner
 
 from unitree_rl_lab.je_loco.rsl_rl_pc.runner import JELocoOnPolicyRunner  # velocity aux 손실 포함
+from unitree_rl_lab.je_loco.rsl_rl_pc.distill_runner import JELocoDistillRunner  # 증류 + 표현 aux + 노후화
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab.envs import (
@@ -224,10 +225,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # model config required by the installed rsl-rl-lib (>= 4.0.0)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
 
-    # create runner — 증류는 rsl_rl 순정 DistillationRunner(teacher 로드 검증 포함),
-    # 그 외는 velocity/표현 aux 손실을 얹은 JELocoOnPolicyRunner.
+    # create runner — 증류는 JELocoDistillRunner(순정 DistillationRunner + 표현 보조손실 +
+    # 학습 중 관측 노후화), 그 외는 velocity/표현 aux 손실을 얹은 JELocoOnPolicyRunner.
     if is_distill:
-        runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner = JELocoDistillRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
         runner = JELocoOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs

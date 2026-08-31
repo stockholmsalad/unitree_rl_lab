@@ -54,6 +54,9 @@ class PCModelCfg(RslRlRNNModelCfg):
     # 3-way 비교: jepa_v1 / recon_v1 / "" — 유일 변수 = 인코더 초기화. repr_head 는 "none".
     pretrained_encoder: str = ""
     freeze_encoder: bool = True
+    # 2026-08-31 — ẑ_e(t+k) 를 정책 입력에 포함(예측기를 배포 경로 안으로).
+    # cond_command/action 과 동시 사용 불가(추론 시 미래 행동·명령이 없음 → 모델이 막는다).
+    predictor_in_policy: bool = False
 
 
 @configclass
@@ -148,11 +151,42 @@ class TeacherMLPCfg(RslRlMLPModelCfg):
 
 @configclass
 class JELocoDistillRunnerCfg(RslRlDistillationRunnerCfg):
-    num_steps_per_env = 32          # recurrent student → 긴 시퀀스 (PPO 쪽과 동일)
-    max_iterations = 8000
-    save_interval = 200
+    # ── 롤아웃 길이는 예측 지평이 정한다 (2026-08-31) ──────────────────────────
+    # JEPA 손실은 저장된 롤아웃 안에서 (t, t+k) 쌍을 만든다. num_steps_per_env ≤ k 면 쌍이
+    # 하나도 없어 손실이 조용히 0 이 된다. k=100 → 128 스텝이면 28 개 시점이 예측 출발점이 된다.
+    # **환경 스텝 예산은 유지한다**: 32×8000 = 128×2000. 최적화 스텝 수도 T/gradient_length 라
+    # 함께 비례해 거의 그대로다. 늘어나는 건 storage 메모리(런당 ~+0.5GB)뿐.
+    num_steps_per_env = 128
+    max_iterations = 2000
+    save_interval = 50
     experiment_name = "je_loco_distill"
     empirical_normalization = False
+
+    # ── 학습 중 관측 노후화 (예측기에 실제 할 일을 준다) ──────────────────────
+    # 관측이 항상 신선하면 ẑ_e(t+k) 는 z_e(t) 에서 사소하게 유도되어 정책이 무시한다.
+    # 근거: 어려운 지형 freeze 1.0 = −35pp 로, 지형 정보를 통째로 지운 blind(−26pp)보다
+    # 9pp 더 해롭다. 노후화가 이 과제에서 가장 비싼 고장이다. 0 = 끔(구 동작).
+    train_staleness_max: int = 25    # d ~ U[0,25] 스텝(0.5s), 에피소드 내 상수
+
+    # ── 표현 보조손실 (증류 내내 유지 = 지속 개입) ───────────────────────────
+    # 조건별로 하나만 켠다: jepa(자기지도) / recon(특권) / 둘 다 0(대조군).
+    lambda_vel: float = 0.0          # 증류에선 critic 관측이 없어 기본 OFF
+    vel_num_chunks: int = 4
+    vel_learning_rate: float = 1.0e-3
+
+    lambda_recon: float = 0.0
+    recon_num_chunks: int = 4
+    recon_learning_rate: float = 1.0e-3
+
+    lambda_jepa: float = 0.0
+    jepa_k: int = 100                # Phase 2 지평 스윕 실측 최적(skill 0.584 @k=100 = 2.0s)
+    ema_tau: float = 0.996
+    jepa_num_chunks: int = 8         # T=128 이라 청크를 늘려 backward peak 억제
+    jepa_learning_rate: float = 1.0e-3
+    lambda_var: float = 1.0
+    lambda_cov: float = 0.04
+    var_gamma: float = 1.0
+    jepa_residual: bool = True       # Δz 예측(copy-baseline 과 정렬) — skill 해석이 직접적
 
     # student 는 pc+proprio(배포 가능), teacher 는 privileged heightmap 232.
     obs_groups = {
@@ -164,10 +198,15 @@ class JELocoDistillRunnerCfg(RslRlDistillationRunnerCfg):
     # 보조손실을 쓰지 않는다(행동 감독이 주 신호이고, 인코더 초기화만이 비교 변수여야 함).
     # init_noise_std 0.1: 롤아웃 탐색용 소량 행동 노이즈. 문헌(Parkour in the Wild)이 증류 중
     # action noise 를 권장 — 이후 RL fine-tune 안정성에도 기여.
+    # predictor_in_policy=True 는 **세 조건 공통**이다. 정책 입력이 [z_e(o), z_p, ẑ_e(o+k)] 가
+    # 되고 예측기가 배포 시에도 살아 있어, 행동손실이 직접 통과한다 → 사전학습 초기화처럼
+    # 씻겨나갈 수 없다. 구조·파라미터 수가 셋 다 같으므로 유일한 변수는 **이 예측기 MLP 를
+    # 무엇이 학습시키느냐**뿐이다(jepa 자기지도 / recon 특권 / 없음).
     student: PCModelCfg = PCModelCfg(
         hidden_dims=[256, 128], activation="elu", obs_normalization=False,
         stochastic=True, init_noise_std=0.1, noise_std_type="scalar", state_dependent_std=False,
         repr_head="none",
+        predictor_in_policy=True,
         pretrained_encoder="", freeze_encoder=False,
     )
     teacher: TeacherMLPCfg = TeacherMLPCfg()

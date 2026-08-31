@@ -208,12 +208,18 @@ class JELocoPCEnvCfg(RobotEnvCfg):
         # 서서 추종 가능 → stand-still 수렴 원인. yaw=0 은 순변위 확보(terrain 승급)에도 유리.
         cmd = self.commands.base_velocity
         cmd.rel_standing_envs = 0.0
-        cmd.ranges.lin_vel_x = (0.3, 0.6)      # 하한 0.3 — 제자리로는 추종 불가(전진 강제)
+        # 2026-08-31 속도·회전 범위 확대 — teacher 봉투 실측에 근거.
+        # 예측의 가치는 속도에 비례한다: latency 10스텝의 위치 오차가 0.4m/s 에서 8cm,
+        # 1.5m/s 에서 30cm. 회전이 0 이면 장면이 단조롭게 흘러 예측이 쉽고 동시에 덜 필요해진다.
+        # 봉투 측정(teacher_s2, terrain_level 5, 12셀): 0.6~1.5 m/s × 0~0.6 rad/s 전 구간
+        # 성공률 95~100% → teacher 가 이 범위를 실제로 걷는다(증류 타깃 유효). 1.5 는 실패
+        # 지점이 아니라 teacher 의 limit_ranges 상한이라, 더 빠르게 가려면 teacher 재학습 필요.
+        cmd.ranges.lin_vel_x = (0.6, 1.5)      # 하한 0.6 — 제자리로는 추종 불가(전진 강제)
         cmd.ranges.lin_vel_y = (0.0, 0.0)
-        cmd.ranges.ang_vel_z = (0.0, 0.0)
-        cmd.limit_ranges.lin_vel_x = (0.3, 1.0)
+        cmd.ranges.ang_vel_z = (-0.6, 0.6)
+        cmd.limit_ranges.lin_vel_x = (0.6, 1.5)
         cmd.limit_ranges.lin_vel_y = (0.0, 0.0)
-        cmd.limit_ranges.ang_vel_z = (0.0, 0.0)
+        cmd.limit_ranges.ang_vel_z = (-0.6, 0.6)
 
         # 움직임 억제 완화(stair 값) → 걷기에 필요한 관절 움직임/동역학 허용.
         #  - joint_pos -0.7→-0.3: 기본 자세 이탈 페널티. -0.7 은 다리를 못 움직이게 해

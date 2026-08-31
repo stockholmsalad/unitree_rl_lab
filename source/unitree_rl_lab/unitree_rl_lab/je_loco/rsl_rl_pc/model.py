@@ -83,6 +83,7 @@ class PointCloudRNNModel(RNNModel):
         proj_dim: int = 128,
         jepa_cond_command: bool = False,   # predictor 에 명령 c_t(3) 조건
         jepa_cond_action: bool = False,    # predictor 에 지평 평균행동(12) 조건
+        predictor_in_policy: bool = False,  # ẑ_e(t+k) 를 정책 입력에 포함 (2026-08-31)
         pretrained_encoder: str = "",      # Phase 3: 사전학습 pc_encoder.pt 경로 ("" = scratch)
         freeze_encoder: bool = True,       # 사전학습 인코더 동결(RL gradient 차단)
         **kwargs,
@@ -95,6 +96,8 @@ class PointCloudRNNModel(RNNModel):
         self._zp_dim = zp_dim
         # actor 만 proprio 를 z_p 로 인코딩(critic 은 privileged 관측을 raw 사용)
         self._encode_proprio = proprio_group in obs_groups[obs_set]
+        # 예측기를 정책 입력에 포함할지 — _get_obs_dim 이 참조하므로 super 전에 세팅
+        self._predictor_in_policy = predictor_in_policy and self._encode_proprio
 
         super().__init__(obs, obs_groups, obs_set, output_dim, **kwargs)
 
@@ -138,7 +141,11 @@ class PointCloudRNNModel(RNNModel):
                 nn.Linear(pc_out_dim, recon_hidden_dim), nn.ELU(),
                 nn.Linear(recon_hidden_dim, hm),
             )
-        elif repr_head == "jepa":
+        # ── 예측기(보조 MLP) ────────────────────────────────────────────────
+        # jepa 헤드가 쓰거나, 정책 입력에 ẑ 를 넣을 때 생성. 세 조건 모두 predictor_in_policy=True
+        # 로 두면 **구조와 파라미터 수가 동일**해지고, 다른 것은 이 MLP 를 무엇이 학습시키느냐뿐이다
+        # (jepa: 행동손실+JEPA / recon: 행동손실만 + z_e 에 특권 재구성 / none: 행동손실만).
+        if repr_head == "jepa" or self._predictor_in_policy:
             # predictor 입력 = [z_e(t), z_p(t), (conditioning: command c_t · 지평평균 action)].
             # 미래 행동/명령을 조건으로 → 미래 관측 z_e(t+k) 예측 가능성↑ (z_p 에 명령은 이미 암묵
             # 포함되나 raw 로 추가; action 은 z_p 에 없는 실제 변위 신호). runner 가 이 플래그를 읽어
@@ -146,10 +153,18 @@ class PointCloudRNNModel(RNNModel):
             self._cond_command = jepa_cond_command
             self._cond_action = jepa_cond_action
             self._cond_dim = (3 if jepa_cond_command else 0) + (12 if jepa_cond_action else 0)
+            # 정책 입력용 예측기는 추론 시 미래 행동/명령을 조건으로 쓸 수 없다(아직 없는 값).
+            # 조용히 어긋나면 학습·추론이 다른 입력을 받으므로 여기서 막는다.
+            if self._predictor_in_policy and self._cond_dim != 0:
+                raise ValueError(
+                    "predictor_in_policy=True 에서는 jepa_cond_command/action 을 쓸 수 없다 "
+                    "(추론 시 미래 행동·명령이 없음). 명령은 이미 proprio 관측을 통해 z_p 에 들어 있다.")
             self.jepa_predictor = nn.Sequential(
                 nn.Linear(pc_out_dim + zp_dim + self._cond_dim, recon_hidden_dim), nn.ELU(),
                 nn.Linear(recon_hidden_dim, pc_out_dim),
             )
+
+        if repr_head == "jepa":
             self.target_pc_encoder = copy.deepcopy(self.pc_encoder)   # EMA target + stop-grad
             for p in self.target_pc_encoder.parameters():
                 p.requires_grad_(False)
@@ -177,6 +192,8 @@ class PointCloudRNNModel(RNNModel):
                 dim += self._zp_dim
             else:
                 dim += obs[g].shape[-1]
+        if self._predictor_in_policy:
+            dim += self._pc_out_dim        # ẑ_e(t+k) 를 GRU 입력에 추가
         return active, dim
 
     def _enc_group(self, g: str, x: torch.Tensor) -> torch.Tensor:
@@ -200,8 +217,14 @@ class PointCloudRNNModel(RNNModel):
         return self
 
     def get_latent(self, obs, masks=None, hidden_state: HiddenState = None):
-        """[z_p, z_e] concat → 정규화 → GRU."""
+        """[z_p, z_e, (ẑ_e)] concat → 정규화 → GRU."""
         parts = [self._enc_group(g, obs[g]) for g in self.obs_groups]
+        if self._predictor_in_policy:
+            # 예측된 미래 잠재를 정책 입력으로 — 예측기가 **배포 시에도 살아 있고**, 행동손실이
+            # 직접 통과한다. 사전학습 초기화와 달리 학습 중에 씻겨나갈 수 없다.
+            z_e = parts[self.obs_groups.index(self._pc_group)]
+            z_p = parts[self.obs_groups.index(self._proprio_group)]
+            parts.append(self.jepa_predict(z_e, z_p, None))
         latent = torch.cat(parts, dim=-1)
         latent = self.obs_normalizer(latent)               # obs_normalization=False → Identity
         latent = self.rnn(latent, masks, hidden_state).squeeze(0)

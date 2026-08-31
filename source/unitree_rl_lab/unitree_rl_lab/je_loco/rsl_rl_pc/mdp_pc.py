@@ -364,6 +364,63 @@ class BlindDegradation:
         return out.reshape(n, d)
 
 
+TRAIN_STALENESS_MAX = 25   # 학습 중 주입 지연 상한 (50Hz 기준 0.5s)
+
+
+class TrainStaleness:
+    """**학습 중** 관측 노후화 주입 — env 마다 지연 d_i 를 뽑아 에피소드 내내 고정.
+
+    왜 필요한가 (2026-08-31): 관측이 항상 신선하면 ẑ_e(t+k) 는 z_e(t) 에서 사소하게 유도되는
+    값이라 정책이 그냥 무시한다. 예측기가 **실제 할 일**을 가지려면 관측이 낡아야 한다.
+    근거는 측정값이다 — 어려운 지형에서 freeze 1.0 은 −35pp 로, 지형 정보를 통째로 지운
+    blind(−26pp)보다 9pp 더 해롭다. 노후화는 이 과제에서 가장 비싼 고장이다.
+
+    **지연은 에피소드 내에서 상수다.** 그래야 저장된 관측열이 진짜 관측열의 시간 이동본이 되어
+    (t, t+k) 쌍이 실제로 k 스텝 떨어진 채 남는다 — JEPA 보조손실의 의미가 보존된다.
+    지연이 매 스텝 흔들리면 쌍 간격이 뭉개져 타깃이 오염된다.
+    """
+
+    def __init__(self, d_max: int = TRAIN_STALENESS_MAX) -> None:
+        self.d_max = int(d_max)
+        self.reset()
+
+    def reset(self) -> None:
+        self._hist = None      # (d_max+1, N, D) 링버퍼
+        self._delay = None     # (N,) env 별 지연(에피소드 상수)
+        self._age = None       # (N,) 리셋 이후 경과
+        self._force = None     # (N,) True = 리셋됨 → 이력 폐기 + 지연 재추첨
+        self._t = 0
+
+    def notify_done(self, dones) -> None:
+        if self._force is not None and dones is not None:
+            self._force |= dones.reshape(-1).bool().to(self._force.device)
+
+    def __call__(self, pc_flat: torch.Tensor) -> torch.Tensor:
+        n = pc_flat.shape[0]
+        cap = self.d_max + 1
+        dev = pc_flat.device
+        if self._hist is None or self._hist.shape[1:] != pc_flat.shape:
+            self._hist = pc_flat.unsqueeze(0).repeat(cap, 1, 1)
+            self._delay = torch.randint(0, self.d_max + 1, (n,), device=dev)
+            self._age = torch.zeros(n, dtype=torch.long, device=dev)
+            self._force = torch.zeros(n, dtype=torch.bool, device=dev)
+            self._t = 0
+        if self._force.any():
+            f = self._force
+            self._hist[:, f] = pc_flat[f].unsqueeze(0)     # 이전 지형 프레임 폐기
+            self._age[f] = 0
+            self._delay[f] = torch.randint(0, self.d_max + 1, (int(f.sum()),), device=dev)
+            self._force = torch.zeros_like(self._force)
+
+        self._hist[self._t % cap] = pc_flat
+        self._t += 1
+        self._age += 1
+        idx = (self._t - 1 - self._delay) % cap                       # (N,) env 별 과거 슬롯
+        past = self._hist[idx, torch.arange(n, device=dev)]           # (N, D)
+        ready = (self._age > self._delay).unsqueeze(-1)               # 이력이 부족하면 현재 프레임
+        return torch.where(ready, past, pc_flat)
+
+
 TEMPORAL_DEGRADATIONS = {
     "freeze": FreezeDegradation,
     "latency": LatencyDegradation,
