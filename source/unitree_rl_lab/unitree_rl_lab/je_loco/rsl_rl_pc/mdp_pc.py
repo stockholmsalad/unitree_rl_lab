@@ -308,19 +308,80 @@ class LatencyDegradation(_TemporalDegradation):
         return torch.where(ready, past, pc_flat)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# blind 대조군 (2026-08-31 추가) — "시각 입력이 도대체 얼마나 기여하는가"
+#
+# 동기: n=5 판정에서 freeze 1.0(카메라 영구 정지)인데도 레벨 5 지형 성공률 91% 가 나왔다.
+# 반면 occlusion 0.4 는 32~51% 로 정책을 부순다. 이 둘이 동시에 참이려면 설명은 하나다 —
+# occlusion 은 "공간 정보 상실"이 아니라 **분포 밖 입력**(발밑 행 전체 valid=0, 학습 중 없던
+# 패턴; 극단적으로 dropout 1.0 은 유효점 0 → glob=0 상수 → 성공률 0.02%)을 만들고 있고,
+# 정책 자체는 신선한 시각에 거의 의존하지 않는다.
+#
+# 그 가설을 직접 재려면 **분포 안에 있으면서 지형 정보만 없는** 입력이 필요하다.
+# 그래서 마스킹(valid→0)을 일절 쓰지 않고 좌표를 **환경 평균 점군**으로 갈아끼운다:
+#   · valid=1 유지 → max-pool 퇴화(glob=0) 아티팩트 원천 차단
+#   · 좌표 스케일·격자 구조는 실제 관측 분포 그대로 → OOD 아님
+#   · 자기 env 지형과의 상호정보량 ≈ 0 → 순수 "눈 감은" 조건
+#
+# 판정: blind 1.0 성공률이 무결손과 비슷하면 인코더 초기화 비교축 자체가 검정력이 없다
+# (이 프로젝트의 모든 무효 결과를 한 번에 설명한다). 크게 떨어지면 시각은 중요하고
+# 게이트 3 의 무효는 시간 결손 설계 문제로 좁혀진다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BlindDegradation:
+    """좌표를 지형 무관 기준 점군으로 치환. level = 치환할 점의 비율(0 항등, 1.0 완전 blind).
+
+    기준 점군은 **첫 호출에서 유효점만의 env 평균**으로 한 번 계산하고 이후 고정한다
+    (레벨 간 비교 가능성 확보 — reset 이 와도 유지).
+    """
+
+    temporal = False
+
+    def __init__(self) -> None:
+        self._ref = None       # (P, 3) 기준 좌표
+        self.reset()
+
+    def reset(self) -> None:
+        pass                   # _ref 는 의도적으로 보존한다
+
+    def notify_done(self, dones) -> None:
+        pass
+
+    def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
+        n, d = pc_flat.shape
+        p = d // 4
+        pc = pc_flat.reshape(n, p, 4)
+        if self._ref is None:
+            v = (pc[..., 3:4] > 0.5).to(pc.dtype)                   # (n, p, 1)
+            self._ref = (pc[..., :3] * v).sum(0) / v.sum(0).clamp(min=1.0)   # (p, 3)
+        if level <= 0.0:
+            return pc_flat
+        swap = torch.rand(n, p, device=pc.device) < level           # (n, p)
+        out = pc.clone()
+        out[..., :3] = torch.where(swap.unsqueeze(-1), self._ref.expand(n, p, 3), out[..., :3])
+        out[..., 3] = torch.where(swap, torch.ones_like(out[..., 3]), out[..., 3])
+        return out.reshape(n, d)
+
+
 TEMPORAL_DEGRADATIONS = {
     "freeze": FreezeDegradation,
     "latency": LatencyDegradation,
     "lowfps": LowFpsDegradation,
 }
 
-ALL_DEGRADATIONS = tuple(DEGRADATIONS) + tuple(TEMPORAL_DEGRADATIONS)
+STATEFUL_DEGRADATIONS = {"blind": BlindDegradation}
+
+ALL_DEGRADATIONS = (tuple(DEGRADATIONS) + tuple(TEMPORAL_DEGRADATIONS)
+                    + tuple(STATEFUL_DEGRADATIONS))
 
 
 def make_degradation(name: str):
     """이름 → 결손 객체(공간·시간 공통 인터페이스: reset / __call__ / notify_done)."""
     if name in TEMPORAL_DEGRADATIONS:
         return TEMPORAL_DEGRADATIONS[name]()
+    if name in STATEFUL_DEGRADATIONS:
+        return STATEFUL_DEGRADATIONS[name]()
     if name in DEGRADATIONS:
         return _StatelessDegradation(DEGRADATIONS[name])
     raise KeyError(f"알 수 없는 결손 '{name}' — 가능: {list(ALL_DEGRADATIONS)}")

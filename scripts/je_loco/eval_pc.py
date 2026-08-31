@@ -27,7 +27,7 @@ parser.add_argument("--steps", type=int, default=1300, help="레벨당 측정 �
 parser.add_argument("--warmup", type=int, default=120, help="레벨 전환 후 측정 전 안정화 스텝")
 parser.add_argument("--dropout_levels", type=str, default="0.0", help="쉼표구분 결손 레벨 (예: 0,0.2,0.4,0.6,0.8,1.0)")
 parser.add_argument("--degradation", type=str, default="dropout",
-                    choices=["dropout", "hole", "occlusion", "freeze", "latency", "lowfps"],
+                    choices=["dropout", "hole", "occlusion", "freeze", "latency", "lowfps", "blind"],
                     help="공간(프레임 독립): dropout(i.i.d 점) · hole(블록) · occlusion(하단 대역) — valid 채널 0=마스킹. "
                          "시간(게이트 3): freeze(확률적 프레임 드롭) · latency(관측 지연) · lowfps(저프레임레이트).")
 parser.add_argument("--fix_terrain", action="store_true", default=True,
