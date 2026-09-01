@@ -36,6 +36,12 @@ parser.add_argument("--no_fix_terrain", dest="fix_terrain", action="store_false"
                     help="terrain 커리큘럼 켠 채 평가(기존 Exp1 방식)")
 parser.add_argument("--terrain_level", type=int, default=-1,
                     help="모든 env 를 이 지형 레벨에 강제 spawn (0~num_rows-1). -1=기본(max_init 분포). 어려운 지형 평가용")
+parser.add_argument("--latency_max_steps", type=int, default=10,
+                    help="latency level 1.0 이 몇 스텝 지연인지. v1 곡선 재현은 10(기본), "
+                         "v2 게이트 3 은 50 — 학습 중 본 노후화(d≤25) 범위 **밖**에서 판정해야 한다.")
+parser.add_argument("--ablate_predictor", action="store_true",
+                    help="게이트 4: 정책 입력의 ẑ 블록을 0 으로 치환. 무결손 성능 낙폭 = "
+                         "정책이 예측기에 실제로 의존하는 정도(직접 측정).")
 parser.add_argument("--eval_seed", type=int, default=42,
                     help="지형 배정 결정론화 → A·B 가 동일 지형을 밟게(공정 비교). 헤드 무관 동일 seed 사용")
 parser.add_argument("--task", type=str, default="Unitree-Go2-JELoco-PC")
@@ -153,7 +159,19 @@ def main():
 
     deg = args_cli.degradation
     # 공간 결손 = 무상태 함수 래퍼, 시간 결손 = 프레임 버퍼를 든 객체. 인터페이스 동일.
-    degrade_fn = make_degradation(deg)
+    degrade_fn = make_degradation(deg, max_steps=args_cli.latency_max_steps)
+    if deg == "latency":
+        print(f"[eval] latency 상한 = {args_cli.latency_max_steps} 스텝 "
+              f"(level 1.0 = {args_cli.latency_max_steps * 0.02:.2f}s @50Hz)")
+
+    # 게이트 4 — 예측기 절제. 예측기가 없는 정책에 켜면 조용히 아무 일도 안 일어나므로 막는다.
+    if args_cli.ablate_predictor:
+        student = getattr(runner.alg, "student", None) or getattr(runner.alg, "actor", None)
+        if not getattr(student, "_predictor_in_policy", False):
+            raise SystemExit("★ --ablate_predictor: 이 정책에는 예측기가 정책 입력에 없다 "
+                             "(predictor_in_policy=False). 절제할 대상이 없음.")
+        student.ablate_predictor = True
+        print("[eval] 게이트 4: 예측기 출력 ẑ 를 0 으로 절제")
     levels = [float(x) for x in args_cli.dropout_levels.split(",")]
     print(f"[eval] {deg} 스윕 (마스킹): {levels}  "
           f"({uenv.num_envs} envs × {args_cli.steps} steps/level)")

@@ -224,7 +224,12 @@ class PointCloudRNNModel(RNNModel):
             # 직접 통과한다. 사전학습 초기화와 달리 학습 중에 씻겨나갈 수 없다.
             z_e = parts[self.obs_groups.index(self._pc_group)]
             z_p = parts[self.obs_groups.index(self._proprio_group)]
-            parts.append(self.jepa_predict(z_e, z_p, None))
+            z_hat = self.jepa_predict(z_e, z_p, None)
+            # 게이트 4(기전 검증): eval 에서 ẑ 블록만 0 으로 → 성공률 낙폭 = 정책이 예측에
+            # 실제로 의존하는 정도. 강인성은 간접 증거지만 이건 직접 측정이다.
+            if getattr(self, "ablate_predictor", False):
+                z_hat = torch.zeros_like(z_hat)
+            parts.append(z_hat)
         latent = torch.cat(parts, dim=-1)
         latent = self.obs_normalizer(latent)               # obs_normalization=False → Identity
         latent = self.rnn(latent, masks, hidden_state).squeeze(0)

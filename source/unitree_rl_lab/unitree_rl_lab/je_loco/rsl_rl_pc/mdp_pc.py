@@ -276,16 +276,23 @@ class LatencyDegradation(_TemporalDegradation):
 
     level=0 항등. 에피소드 시작 직후(이력이 d 스텝에 못 미침)에는 지연시킬 과거가 없으므로
     현재 프레임을 준다 — 없는 데이터를 지어내지 않는다.
+
+    max_steps 는 생성자 인자다(기본 LATENCY_MAX_STEPS=10 → v1 곡선과 재현 일치). v2 판정은
+    **학습 범위 밖**에서 해야 하므로(학습 중 d≤25 를 봤다) eval 에서 50 으로 올려 쓴다.
     """
+
+    def __init__(self, max_steps: int = LATENCY_MAX_STEPS) -> None:
+        self.max_steps = int(max_steps)
+        super().__init__()
 
     def reset(self) -> None:
         super().reset()
-        self._hist = None      # (LATENCY_MAX_STEPS+1, N, D) 링버퍼
+        self._hist = None      # (max_steps+1, N, D) 링버퍼
         self._age = None       # (N,) 리셋 이후 경과 스텝
 
     def __call__(self, pc_flat: torch.Tensor, level: float) -> torch.Tensor:
         n, d_dim = pc_flat.shape
-        cap = LATENCY_MAX_STEPS + 1
+        cap = self.max_steps + 1
         if self._hist is None or self._hist.shape[1:] != pc_flat.shape:
             self._hist = pc_flat.unsqueeze(0).repeat(cap, 1, 1)
             self._age = torch.zeros(n, dtype=torch.long, device=pc_flat.device)
@@ -298,7 +305,7 @@ class LatencyDegradation(_TemporalDegradation):
             self._force = torch.zeros_like(self._force)
 
         self._hist[self._t % cap] = pc_flat
-        delay = int(round(max(0.0, level) * LATENCY_MAX_STEPS))
+        delay = int(round(max(0.0, level) * self.max_steps))
         self._t += 1
         self._age += 1
         if delay <= 0:
@@ -433,10 +440,16 @@ ALL_DEGRADATIONS = (tuple(DEGRADATIONS) + tuple(TEMPORAL_DEGRADATIONS)
                     + tuple(STATEFUL_DEGRADATIONS))
 
 
-def make_degradation(name: str):
-    """이름 → 결손 객체(공간·시간 공통 인터페이스: reset / __call__ / notify_done)."""
+def make_degradation(name: str, **kw):
+    """이름 → 결손 객체(공간·시간 공통 인터페이스: reset / __call__ / notify_done).
+
+    kw 는 해당 클래스가 받는 인자만 전달된다(예: latency 의 max_steps).
+    """
     if name in TEMPORAL_DEGRADATIONS:
-        return TEMPORAL_DEGRADATIONS[name]()
+        cls = TEMPORAL_DEGRADATIONS[name]
+        import inspect
+        ok = {k: v for k, v in kw.items() if k in inspect.signature(cls.__init__).parameters}
+        return cls(**ok)
     if name in STATEFUL_DEGRADATIONS:
         return STATEFUL_DEGRADATIONS[name]()
     if name in DEGRADATIONS:
