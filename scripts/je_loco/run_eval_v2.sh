@@ -75,6 +75,10 @@ one() {
   local out=$1 tl=$2 deg=$3 run=$4 extra=$5 prefix=$6
   local csv="${prefix}_curve_${run}_${CKPT%.pt}.csv"
   [ -f "$out/$csv" ] && { echo "  skip $csv"; return 0; }
+  local src="${deg}_curve_${run}_${CKPT%.pt}.csv"
+  # CWD 에 남은 이전 CSV(스모크 테스트 잔여물 등)를 먼저 지운다. 안 지우면 이번 eval 이
+  # 죽었을 때 낡은 파일이 결과로 수거돼 조용히 오염된다.
+  rm -f "$src"
   local lat=""; [ "$deg" = latency ] && lat="--latency_max_steps $LATENCY_MAX"
   python -u scripts/je_loco/eval_pc.py --headless \
     --task "$TASK" --num_envs "$ENVS" --steps "$STEPS" --eval_seed "$SEED" \
@@ -82,7 +86,6 @@ one() {
     --load_run "$run" --checkpoint "$LOGROOT/$run/$CKPT" \
     $tl $lat $extra > "$out/log_${prefix}_${run}.txt" 2>&1
   # eval_pc.py 는 CWD 에 <deg>_curve_<run>_<ckpt>.csv 를 떨군다 → 수거(+게이트4는 개명)
-  local src="${deg}_curve_${run}_${CKPT%.pt}.csv"
   if [ -f "$src" ]; then mv "$src" "$out/$csv"; echo "  [saved] $out/$csv"
   else echo "  !! CSV 없음: $src  (로그: $out/log_${prefix}_${run}.txt)"; echo "$prefix/$run" >> "$FAILDB"; fi
 }
