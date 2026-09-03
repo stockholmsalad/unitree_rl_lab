@@ -17,6 +17,16 @@ SPATIAL = ["occlusion"]    # dropout 은 판정력 없음이 확인되어 사전
 TEMPORAL = ["freeze", "latency", "lowfps"]
 
 RUN_RE = re.compile(r"_D_(jepa|recon|scratch)_s(\d+)_model_")
+V2 = False
+
+
+def use_v2():
+    """v2 는 비교축이 다르다 — 조건 scratch→none, 런 이름 D_→V2_,
+    게이트 1 판정도 절대 마진이 아니라 시드폭 기준(사전등록 v2 §4)."""
+    global CONDS, RUN_RE, V2
+    CONDS = ["jepa", "recon", "none"]
+    RUN_RE = re.compile(r"_V2_(jepa|recon|none)_s(\d+)_model_")
+    V2 = True
 
 
 def load(root):
@@ -70,8 +80,8 @@ def gate1(data, label):
     per = defaultdict(list)
     ident = defaultdict(set)
     for (deg, cond, seed), curve in data.items():
-        if curve[0][0] != 0.0:
-            continue
+        if deg == "abl" or curve[0][0] != 0.0:
+            continue      # abl 은 ẑ 를 절제한 곡선 — 무결손 성능이 아니다(게이트 4 전용)
         ident[(cond, seed)].add(round(curve[0][1], 4))
         per[cond].append((seed, deg, curve[0][1]))
     bad = {k: v for k, v in ident.items() if len(v) > 1}
@@ -96,13 +106,25 @@ def gate1(data, label):
                  for c in CONDS) * 100
 
     d = (means["jepa"] - means["recon"]) * 100
-    print(f"\n  Δ(jepa − recon) = {d:+.2f}pp   마진 ±{MARGIN_PP}pp   최대 조건내 시드폭 {spread:.2f}pp")
-    if d >= 0:
-        print(f"  판정: ★ 통과 — jepa 가 recon 이상 (특권 정보 없이 대등 이상)")
-    elif abs(d) < MARGIN_PP:
-        print(f"  판정: ★ 통과 — 마진 이내로 동등")
+    if V2:
+        # v1 에서 절대 마진(2.0pp)을 미리 박았다가 실제 시드폭(2.6~7.8pp)이 그보다 커져
+        # 검정력 논거가 무너졌다. v2 는 시드폭 기준으로 통일한다(자기교정).
+        print(f"\n  Δ(jepa − recon) = {d:+.2f}pp   최대 조건내 시드폭 {spread:.2f}pp")
+        if d >= 0:
+            print("  판정: ★ 통과 — jepa 가 recon 이상 (특권 정보 없이 대등 이상)")
+        elif abs(d) < spread:
+            print("  판정: ★ 통과 — 격차가 시드폭 이내로 동등")
+        else:
+            print(f"  판정: ✗ 실패 — jepa 가 recon 에 {abs(d):.2f}pp 열세 (시드폭 초과)")
+        print(f"  전제 확인: {CONDS[2]} 평균 {means[CONDS[2]]*100:.2f}% — 보조손실이 무결손 성능을 해쳤는지")
     else:
-        print(f"  판정: ✗ 실패 — jepa 가 recon 에 {abs(d):.2f}pp 열세 (마진 초과)")
+        print(f"\n  Δ(jepa − recon) = {d:+.2f}pp   마진 ±{MARGIN_PP}pp   최대 조건내 시드폭 {spread:.2f}pp")
+        if d >= 0:
+            print("  판정: ★ 통과 — jepa 가 recon 이상 (특권 정보 없이 대등 이상)")
+        elif abs(d) < MARGIN_PP:
+            print("  판정: ★ 통과 — 마진 이내로 동등")
+        else:
+            print(f"  판정: ✗ 실패 — jepa 가 recon 에 {abs(d):.2f}pp 열세 (마진 초과)")
     return means
 
 
@@ -140,9 +162,9 @@ def gate23(data, degs, title, pred, label):
             print(f"        판정: 판정력 없음 — 격차가 시드 노이즈에 묻힘")
         else:
             j, r, s = (summ[c][0][0] * 100 if c in summ else float('nan') for c in CONDS)
-            print(f"        판정: 신호 있음.  jepa−recon {j-r:+.2f}pp,  jepa−scratch {j-s:+.2f}pp")
+            print(f"        판정: 신호 있음.  jepa−recon {j-r:+.2f}pp,  jepa−{CONDS[2]} {j-s:+.2f}pp")
             # 무겹침(가장 강한 증거): 두 조건의 시드 범위가 전혀 겹치지 않는가
-            for a_, b_ in [("jepa", "recon"), ("jepa", "scratch")]:
+            for a_, b_ in [("jepa", "recon"), ("jepa", CONDS[2])]:
                 if a_ in summ and b_ in summ:
                     (_, alo, ahi), _ = summ[a_]
                     (_, blo, bhi), _ = summ[b_]
@@ -185,10 +207,54 @@ def blind_report(data, label):
         print("        (occlusion 이 부순 것은 정보 상실이 아니라 분포 밖 입력이라는 해석과 양립)")
 
 
+def gate4(data, label):
+    """게이트 4 — 정책이 ẑ 를 실제로 쓰는가(사전등록 v2 §4, 기전 검증).
+
+    abl_curve_*.csv = 정책 입력의 ẑ 블록만 0 으로 치환하고 잰 level 0 성공률.
+    기준선은 같은 런의 무결손 성능이며, 그 항등성은 게이트 1 이 이미 확인한다.
+    """
+    abl = {(c, s): cv[0][1] for (d, c, s), cv in data.items() if d == "abl"}
+    if not abl:
+        return
+    base = {(c, s): cv[0][1] for (d, c, s), cv in data.items()
+            if d != "abl" and cv[0][0] == 0.0}
+    print(f"\n{'='*78}\n게이트 4 · 예측기가 실제로 쓰이는가 ({label})  — 기전 검증\n{'='*78}")
+    print("  사전 예측: 낙폭(jepa) > 낙폭(none).  강인성은 간접 증거지만 이건 직접 측정이다.")
+    print(f"\n  {'조건':<9} {'n':>3}  {'무결손 %':>9}  {'ẑ 절제 %':>10}  {'낙폭 pp':>9}  [min, max]")
+    drops = {}
+    for c in CONDS:
+        seeds = sorted(s for (cc, s) in abl if cc == c and (cc, s) in base)
+        if not seeds:
+            continue
+        b = [base[(c, s)] for s in seeds]
+        a = [abl[(c, s)] for s in seeds]
+        d = [(x - y) * 100 for x, y in zip(b, a)]
+        drops[c] = d
+        print(f"  {c:<9} {len(seeds):>3}  {sum(b)/len(b)*100:9.2f}  {sum(a)/len(a)*100:10.2f}"
+              f"  {sum(d)/len(d):9.2f}  [{min(d):5.2f}, {max(d):5.2f}]")
+    if "jepa" not in drops:
+        return
+    mj = sum(drops["jepa"]) / len(drops["jepa"])
+    spread = max((max(v) - min(v)) for v in drops.values())
+    print(f"\n  최대 조건내 시드폭 {spread:.2f}pp")
+    for other in [c for c in CONDS if c != "jepa" and c in drops]:
+        mo = sum(drops[other]) / len(drops[other])
+        gap = mj - mo
+        print(f"  낙폭(jepa) − 낙폭({other}) = {gap:+.2f}pp   → "
+              f"{'★ 신호 있음' if gap > spread else '판정력 없음 — 시드 노이즈에 묻힘'}")
+    if all(abs(sum(v) / len(v)) < 1.0 for v in drops.values()):
+        print("\n  판정: 세 조건 모두 낙폭 ~0 — 예측기는 장식이고 v2 개입 자체가 실패다.")
+        print("        사전등록 §4 에 따라 그대로 보고한다.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roots", nargs="+")
+    ap.add_argument("--v2", action="store_true",
+                    help="v2 비교축(jepa/recon/none · V2_* 런 · 시드폭 판정 · 게이트 4)")
     a = ap.parse_args()
+    if a.v2:
+        use_v2()
     for root in a.roots:
         label = "어려운 지형" if root.rstrip("/").endswith("_hard") else "기본 지형"
         data = load(root)
@@ -199,10 +265,13 @@ def main():
         print(f"\n\n{'#'*78}\n# {root}  ({label})   결손 {degs}   커브 {len(data)}개\n{'#'*78}")
         gate1(data, label)
         gate23(data, [d for d in SPATIAL if d in degs],
-               "게이트 2 · 공간 결손 강인성", "recon > scratch > jepa", label)
+               "게이트 2 · 공간 결손 강인성",
+               "recon >= jepa" if V2 else "recon > scratch > jepa", label)
         gate23(data, [d for d in TEMPORAL if d in degs],
-               "게이트 3 · 시간 결손 강인성  ★핵심", "jepa > recon 및 jepa > scratch", label)
+               "게이트 3 · 시간 결손 강인성  ★핵심",
+               f"jepa > recon 및 jepa > {CONDS[2]}", label)
         blind_report(data, label)
+        gate4(data, label)
 
 
 if __name__ == "__main__":
