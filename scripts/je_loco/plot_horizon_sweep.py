@@ -45,19 +45,25 @@ def main():
     ap.add_argument("--logs", nargs="+", required=True, help="pretrain 로그 (glob 가능)")
     ap.add_argument("--out", default="docs/figs/horizon_sweep.png")
     ap.add_argument("--mark_k", type=int, default=100, help="채택한 지평 (강조 표시)")
+    ap.add_argument("--labels", nargs="*", default=None,
+                    help="범례 이름 (로그 순서대로). 없으면 파일 이름을 쓴다")
     a = ap.parse_args()
 
     paths = [p for pat in a.logs for p in sorted(glob.glob(os.path.expanduser(pat)))]
     series = [(os.path.basename(p).replace(".log", ""), d)
               for p in paths if (d := parse(p))]
+    if a.labels:
+        if len(a.labels) != len(series):
+            raise SystemExit(f"--labels {len(a.labels)}개 ≠ 파싱된 로그 {len(series)}개")
+        series = [(lab, d) for lab, (_, d) in zip(a.labels, series)]
     if not series:
         raise SystemExit(f"skill_k* 를 담은 로그가 없다: {paths}")
 
     fig, ax = plt.subplots(figsize=(6.4, 4.0), dpi=200)
     ax.axhline(0, color=INK2, lw=1.2, ls=(0, (4, 3)), zorder=1)
     ax.annotate("copy 기준선 — 여기 아래면 예측이 복사보다 못하다",
-                xy=(0.985, 0.02), xycoords=("axes fraction", "data"),
-                ha="right", va="bottom", fontsize=8.5, color=INK2)
+                xy=(0.015, 0.015), xycoords=("axes fraction", "data"),
+                ha="left", va="bottom", fontsize=8.5, color=INK2)
 
     peak = None
     for i, (name, d) in enumerate(series):
@@ -77,6 +83,8 @@ def main():
     if a.mark_k in [k for _, d in series for k in d]:
         ax.axvline(a.mark_k, color=GRID, lw=1.2, zorder=0)
 
+    ys = [v for _, d in series for v in d.values()]
+    ax.set_ylim(min(0, min(ys)) - 0.03, max(ys) + 0.10)   # 최고점 라벨 자리
     ax.set_xlabel("예측 지평 k  (스텝, 1스텝 = 0.02 s)", fontsize=10, color=INK)
     ax.set_ylabel("skill  = 1 − loss_pred / copy_mse", fontsize=10, color=INK)
     ax.set_title("예측 지평이 길수록 예측이 값을 갖는다", fontsize=12.5,
@@ -89,7 +97,7 @@ def main():
         ax.spines[s].set_color(GRID)
     ax.tick_params(colors=INK2, labelsize=9)
     if len(series) > 1:
-        ax.legend(frameon=False, fontsize=9, loc="lower right")
+        ax.legend(frameon=False, fontsize=9, loc="center left")
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     fig.tight_layout()

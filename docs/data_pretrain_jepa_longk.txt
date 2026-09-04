@@ -1,0 +1,28 @@
+# Phase 2 사전학습 지평선 스윕 (ks=25,50,100,150) — 논문 그림 4 의 원자료.
+#
+# 출처: 이 실행은 pilab 에서 터미널로만 출력되고 로그 파일로 저장되지 않았다.
+#       아래 본문은 그때의 터미널 출력을 그대로 복구한 것이며 수치를 가공하지 않았다.
+#       실행 산출물인 체크포인트는 pretrained/jepa_longk/ 에 남아 있다.
+# 복구 2026-09-04.  데이터셋 datasets/teacher_v1 (8 shards, 8,388,608 env-steps).
+[pretrain] objective=jepa ks=[25, 50, 100, 150] mask_aug≤0.3 device=cuda
+[ep   1/20] pred=0.1420  skill_k100=-0.1664  skill_k150=0.1598  skill_k25=-0.6699  skill_k50=-0.3808
+[ep   2/20] pred=0.8997  skill_k100=0.5000  skill_k150=0.5053  skill_k25=0.3850  skill_k50=0.4608
+[ep   3/20] pred=1.1042  skill_k100=0.5219  skill_k150=0.5249  skill_k25=0.4173  skill_k50=0.4874
+[ep   4/20] pred=1.0861  skill_k100=0.5314  skill_k150=0.5349  skill_k25=0.4276  skill_k50=0.4979
+[ep   5/20] pred=1.0121  skill_k100=0.5392  skill_k150=0.5407  skill_k25=0.4316  skill_k50=0.5054
+[ep   6/20] pred=0.9247  skill_k100=0.5450  skill_k150=0.5444  skill_k25=0.4370  skill_k50=0.5119
+[ep   7/20] pred=0.8518  skill_k100=0.5502  skill_k150=0.5496  skill_k25=0.4424  skill_k50=0.5175
+[ep   8/20] pred=0.7912  skill_k100=0.5554  skill_k150=0.5541  skill_k25=0.4470  skill_k50=0.5235
+[ep   9/20] pred=0.7498  skill_k100=0.5588  skill_k150=0.5573  skill_k25=0.4495  skill_k50=0.5286
+[ep  10/20] pred=0.7067  skill_k100=0.5631  skill_k150=0.5610  skill_k25=0.4529  skill_k50=0.5335
+[ep  11/20] pred=0.6708  skill_k100=0.5676  skill_k150=0.5645  skill_k25=0.4570  skill_k50=0.5380
+[ep  12/20] pred=0.6477  skill_k100=0.5709  skill_k150=0.5680  skill_k25=0.4601  skill_k50=0.5402
+[ep  13/20] pred=0.6145  skill_k100=0.5741  skill_k150=0.5701  skill_k25=0.4628  skill_k50=0.5439
+[ep  14/20] pred=0.5943  skill_k100=0.5758  skill_k150=0.5731  skill_k25=0.4651  skill_k50=0.5466
+[ep  15/20] pred=0.5697  skill_k100=0.5767  skill_k150=0.5741  skill_k25=0.4660  skill_k50=0.5489
+[ep  16/20] pred=0.5519  skill_k100=0.5783  skill_k150=0.5749  skill_k25=0.4677  skill_k50=0.5509
+[ep  17/20] pred=0.5403  skill_k100=0.5803  skill_k150=0.5768  skill_k25=0.4678  skill_k50=0.5528
+[ep  18/20] pred=0.5235  skill_k100=0.5809  skill_k150=0.5771  skill_k25=0.4688  skill_k50=0.5531
+[ep  19/20] pred=0.5123  skill_k100=0.5822  skill_k150=0.5778  skill_k25=0.4697  skill_k50=0.5537
+[ep  20/20] pred=0.4976  skill_k100=0.5837  skill_k150=0.5778  skill_k25=0.4710  skill_k50=0.5549
+[pretrain] 저장 완료 → pretrained/jepa_longk/pc_encoder.pt
