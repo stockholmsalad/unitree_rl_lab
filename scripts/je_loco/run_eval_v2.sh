@@ -37,6 +37,9 @@ HARD_LEVEL="${HARD_LEVEL:-5}"
 DEGS="${DEGS:-occlusion freeze latency lowfps blind}"
 ABLATE="${ABLATE:-1}"              # 게이트 4 수행 여부
 PARALLEL="${PARALLEL:-1}"
+# 지형 순서. 판정의 무게중심은 hard 다 — 기본 지형은 난이도 평균 1.43 이라 천장에 가깝고
+# v1 에서도 구별력이 약했다. 시간이 모자라면 hard 가 남아야 하므로 먼저 돌 수 있게 연다.
+TERRAINS="${TERRAINS:-easy hard}"
 LOGROOT=logs/rsl_rl/je_loco_distill
 
 # ── 중지 규칙 집행: 세 조건이 모두 완주한 최대 시드까지 ──
@@ -57,7 +60,7 @@ for c in jepa recon none; do for s in $(seq 1 $MAXSEED); do RUNS+=("${DIR[${c}_$
 
 echo "############ v2 평가 스윕 ############"
 echo "  중지 규칙 적용 → n=$MAXSEED (세 조건 × seed 1~$MAXSEED = ${#RUNS[@]} 런)"
-echo "  결손=$DEGS   게이트4 절제=$ABLATE   병렬=$PARALLEL"
+echo "  결손=$DEGS   게이트4 절제=$ABLATE   병렬=$PARALLEL   지형=$TERRAINS"
 echo "  envs=$ENVS steps=$STEPS eval_seed=$SEED levels=$LEVELS latency_max=$LATENCY_MAX"
 for s in $(seq 1 $MAXSEED); do printf "    seed %d: %s | %s | %s\n" "$s" "${DIR[jepa_$s]}" "${DIR[recon_$s]}" "${DIR[none_$s]}"; done
 
@@ -93,7 +96,7 @@ one() {
 slot() { while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n 2>/dev/null || sleep 5; done; }
 
 # ── 지형 2종 × (결손 스윕 + 게이트4 절제) ──
-for terrain in easy hard; do
+for terrain in $TERRAINS; do
   if [ "$terrain" = hard ]; then OUT=results/v2_matrix_hard; TL="--terrain_level $HARD_LEVEL"
   else                          OUT=results/v2_matrix;      TL=""; fi
   mkdir -p "$OUT"
