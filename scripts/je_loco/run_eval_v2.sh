@@ -40,15 +40,20 @@ PARALLEL="${PARALLEL:-1}"
 # 지형 순서. 판정의 무게중심은 hard 다 — 기본 지형은 난이도 평균 1.43 이라 천장에 가깝고
 # v1 에서도 구별력이 약했다. 시간이 모자라면 hard 가 남아야 하므로 먼저 돌 수 있게 연다.
 TERRAINS="${TERRAINS:-easy hard}"
+# 런 이름 접두어와 조건 목록. v5 처럼 조건이 하나뿐인 탐색적 실험도 같은 스윕으로 돌린다.
+#   PREFIX=V5 CONDS=max SEEDS_N=3 TERRAINS=hard bash scripts/je_loco/run_eval_v2.sh
+PREFIX="${PREFIX:-V2}"
+CONDS="${CONDS:-jepa recon none}"
+SEEDS_N="${SEEDS_N:-5}"
 LOGROOT=logs/rsl_rl/je_loco_distill
 
 # ── 중지 규칙 집행: 세 조건이 모두 완주한 최대 시드까지 ──
 declare -A DIR
 MAXSEED=0
-for s in 1 2 3 4 5; do
+for s in $(seq 1 "$SEEDS_N"); do
   ok=1
-  for c in jepa recon none; do
-    d=$(ls -d "$LOGROOT"/*_V2_${c}_s${s} 2>/dev/null | head -1)
+  for c in $CONDS; do
+    d=$(ls -d "$LOGROOT"/*_${PREFIX}_${c}_s${s} 2>/dev/null | head -1)
     if [ -n "$d" ] && [ -f "$d/$CKPT" ]; then DIR[${c}_$s]=$(basename "$d"); else ok=0; fi
   done
   [ "$ok" -eq 1 ] && MAXSEED=$s || break
@@ -56,13 +61,13 @@ done
 [ "$MAXSEED" -eq 0 ] && { echo "!! 세 조건이 모두 완주한 시드가 없다. 학습 진행 확인."; exit 1; }
 
 RUNS=()
-for c in jepa recon none; do for s in $(seq 1 $MAXSEED); do RUNS+=("${DIR[${c}_$s]}"); done; done
+for c in $CONDS; do for s in $(seq 1 $MAXSEED); do RUNS+=("${DIR[${c}_$s]}"); done; done
 
 echo "############ v2 평가 스윕 ############"
-echo "  중지 규칙 적용 → n=$MAXSEED (세 조건 × seed 1~$MAXSEED = ${#RUNS[@]} 런)"
+echo "  중지 규칙 적용 → n=$MAXSEED (조건 [$CONDS] × seed 1~$MAXSEED = ${#RUNS[@]} 런, 접두어 $PREFIX)"
 echo "  결손=$DEGS   게이트4 절제=$ABLATE   병렬=$PARALLEL   지형=$TERRAINS"
 echo "  envs=$ENVS steps=$STEPS eval_seed=$SEED levels=$LEVELS latency_max=$LATENCY_MAX"
-for s in $(seq 1 $MAXSEED); do printf "    seed %d: %s | %s | %s\n" "$s" "${DIR[jepa_$s]}" "${DIR[recon_$s]}" "${DIR[none_$s]}"; done
+for s in $(seq 1 $MAXSEED); do printf "    seed %d:" "$s"; for c in $CONDS; do printf " %s" "${DIR[${c}_$s]}"; done; echo; done
 
 # ── 사전 점검: 증류 체크포인트인지 (v1 에서 로드 분기 문제로 한 번 태운 적 있음) ──
 python3 - "$LOGROOT/${RUNS[0]}/$CKPT" <<'PY' || exit 1

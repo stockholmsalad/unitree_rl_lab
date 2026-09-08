@@ -29,6 +29,14 @@ def use_v2():
     V2 = True
 
 
+def use_conds(names):
+    """탐색적 실험용 — 조건 목록과 런 이름 접두어를 임의로 연다(V5_max_s1 등)."""
+    global CONDS, RUN_RE, V2
+    CONDS = list(names)
+    RUN_RE = re.compile(r"_V\d+_(" + "|".join(names) + r")_s(\d+)_model_")
+    V2 = True
+
+
 def load(root):
     """{(deg, cond, seed): [(level, success), ...]}"""
     out = {}
@@ -250,10 +258,14 @@ def gate4(data, label):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("roots", nargs="+")
+    ap.add_argument("--conds", default="",
+                    help="조건 목록(쉼표). 예: --conds max  → V5_max_s* 를 읽는다")
     ap.add_argument("--v2", action="store_true",
                     help="v2 비교축(jepa/recon/none · V2_* 런 · 시드폭 판정 · 게이트 4)")
     a = ap.parse_args()
-    if a.v2:
+    if a.conds:
+        use_conds([c.strip() for c in a.conds.split(",") if c.strip()])
+    elif a.v2:
         use_v2()
     for root in a.roots:
         label = "어려운 지형" if root.rstrip("/").endswith("_hard") else "기본 지형"
