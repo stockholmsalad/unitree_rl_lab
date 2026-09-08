@@ -167,6 +167,9 @@ class JELocoDistillRunnerCfg(RslRlDistillationRunnerCfg):
     # 근거: 어려운 지형 freeze 1.0 = −35pp 로, 지형 정보를 통째로 지운 blind(−26pp)보다
     # 9pp 더 해롭다. 노후화가 이 과제에서 가장 비싼 고장이다. 0 = 끔(구 동작).
     train_staleness_max: int = 25    # d ~ U[0,25] 스텝(0.5s), 에피소드 내 상수
+    train_occlusion_max: float = 0.0  # 학습 중 공간 차폐 증강 상한. 0=off.
+    #   v2 는 시간 결손만 주입했고 공간 차폐 평가에서 jepa 전 시드가 붕괴했다
+    #   (레벨 0.4 생존 0/5, recon 3/5). 겪어보지 않은 고장에 무너진 것이다.
 
     # ── 표현 보조손실 (증류 내내 유지 = 지속 개입) ───────────────────────────
     # 조건별로 하나만 켠다: jepa(자기지도) / recon(특권) / 둘 다 0(대조군).

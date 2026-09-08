@@ -37,7 +37,7 @@ import torch
 from rsl_rl.runners import DistillationRunner
 from rsl_rl.utils import check_nan
 
-from .mdp_pc import TrainStaleness
+from .mdp_pc import TrainStaleness, make_degradation
 from .repr_aux import ReprAuxMixin
 
 
@@ -52,6 +52,15 @@ class JELocoDistillRunner(ReprAuxMixin, DistillationRunner):
         self._stale = TrainStaleness(d_max) if d_max > 0 else None
         print(f"[JELoco] 학습 중 관측 노후화: "
               f"{'d ~ U[0, %d] 스텝 (에피소드 상수)' % d_max if self._stale else 'OFF'}")
+
+        # 학습 중 공간 결손 증강. v2 는 시간 노후화만 주입했고, 그 결과 공간 차폐 평가에서
+        # 전 시드가 붕괴했다(레벨 0.4 에서 생존 0/5). 겪어보지 않은 고장에 무너진 것이다.
+        # 매 스텝 레벨을 U[0, max] 에서 새로 뽑는다 — 정책이 전 구간 심각도를 겪게 한다.
+        occ_max = float(train_cfg.get("train_occlusion_max", 0.0))
+        self._occ = make_degradation("occlusion") if occ_max > 0.0 else None
+        self._occ_max = occ_max
+        print(f"[JELoco] 학습 중 공간 차폐: "
+              f"{'level ~ U[0, %.2f] (스텝마다 재추첨)' % occ_max if self._occ else 'OFF'}")
 
         k = getattr(self, "_jepa_k", 0)
         if self._jepa_optimizer is not None and self.cfg["num_steps_per_env"] <= k:
@@ -90,6 +99,9 @@ class JELocoDistillRunner(ReprAuxMixin, DistillationRunner):
                     # ("teacher", 특권)을 쓰므로 영향받지 않는다 → 감독 신호는 참 상태 기준.
                     # storage 에도 노후화된 관측이 들어가는데, 지연이 에피소드 상수라 저장열은
                     # 진짜 관측열의 시간 이동본이고 (t, t+k) 간격은 정확히 k 로 보존된다.
+                    if self._occ is not None:
+                        lv = float(torch.rand(()).item()) * self._occ_max
+                        obs["pointcloud"] = self._occ(obs["pointcloud"], lv)
                     if self._stale is not None:
                         obs["pointcloud"] = self._stale(obs["pointcloud"])
                     actions = self.alg.act(obs)
