@@ -511,8 +511,15 @@ class JELocoTeacherPlayEnvCfg(JELocoTeacherEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 32
         if self.scene.terrain.terrain_generator is not None:
+            # num_cols 는 **학생(Distill play)과 같아야 한다**. 학생은 이 세 줄이 없어
+            # 상속 기본값 10×20 을 쓰는데, 교사만 8 열이면 8 종 지형의 비율
+            # {0.1,0.1,0.2,0.2,0.1,0.1,0.1,0.1} 이 반올림되며 구성이 달라진다
+            # (20 열: 2·2·4·4·2·2·2·2 / 8 열: 일부 타입이 1 패치 또는 0 패치).
+            # eval_pc.py 도 play cfg 를 쓰므로 이 불일치는 교사↔학생 수치 비교를
+            # 통째로 오염시킨다 — eval_seed 를 맞춰도 격자 자체가 다르면 소용없다.
+            # (2026-09-10 육안 확인에서 "학생 지형이 더 어렵다"로 발견)
             self.scene.terrain.terrain_generator.num_rows = 10
-            self.scene.terrain.terrain_generator.num_cols = 8
+            self.scene.terrain.terrain_generator.num_cols = 20
             self.scene.terrain.terrain_generator.curriculum = True
         self.scene.terrain.max_init_terrain_level = 5
         self.observations.policy.enable_corruption = False
