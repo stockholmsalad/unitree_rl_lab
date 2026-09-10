@@ -57,6 +57,7 @@ def main():
     p.add_argument("--dir", required=True)
     p.add_argument("--out", default="docs/figs/fig10_gate4.png")
     p.add_argument("--suptitle", default="")
+    p.add_argument("--labels", default="", help="범례 이름 재지정. 예: --labels max=제안 설정")
     a = p.parse_args()
 
     data = {c: v for c, v in load(a.dir).items() if v}
@@ -69,6 +70,10 @@ def main():
     for i, c in enumerate(conds):
         COLORS.setdefault(c, extra[i % len(extra)])
         LABELS.setdefault(c, c)
+    for kv in a.labels.split(","):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            LABELS[k.strip()] = v.strip()
 
     fig, ax = plt.subplots(figsize=(8.2, 0.62 * len(conds) + 2.2), dpi=200)
     drops, rows = {}, {}
@@ -87,17 +92,19 @@ def main():
                 solid_capstyle="round", zorder=2)
         ax.plot([mb], [y], "o", ms=9, mfc="white", mec=COLORS[c], mew=2.2, zorder=4)
         ax.plot([mz], [y], "o", ms=9, color=COLORS[c], mec="white", mew=1.6, zorder=4)
-        ax.text((mb + mz) / 2, y + .17, f"−{sum(d)/len(d):.2f}pp", ha="center",
+        ax.text((mb + mz) / 2, y + .19, f"{sum(d)/len(d):+.2f}pp", ha="center",
                 fontsize=10, color=INK, fontweight="medium")
-        ax.text(mb + 1.0, y, f"{mb:.1f}", va="center", fontsize=9, color=INK2)
-        ax.text(mz - 1.0, y, f"{mz:.1f}", va="center", ha="right", fontsize=9, color=INK2)
+        lo_edge, hi_edge = min(min(z), mb, mz), max(max(z), mb, mz)
+        ax.text(hi_edge + 1.2, y, f"무결손 {mb:.1f}", va="center", fontsize=8.5, color=INK2)
+        ax.text(lo_edge - 1.2, y, f"{mz:.1f} 절제", va="center", ha="right",
+                fontsize=8.5, color=INK2)
 
     ax.set_yticks(list(rows.values()), [LABELS[c] for c in rows])
     ax.set_ylim(-0.65, len(conds) - 0.25)
     ax.set_xlabel("결손 없는 상태의 성공률 (%)", fontsize=10, color=INK)
     lo = min(min(v for _, v in d.values()) for d in data.values())
     hi = max(max(v for v, _ in d.values()) for d in data.values())
-    ax.set_xlim(lo - 9, hi + 6)
+    ax.set_xlim(lo - 11, hi + 11)
     ax.grid(axis="x", color=GRID, lw=0.8, zorder=0)
     ax.set_axisbelow(True)
     for s in ("top", "right", "left"):
@@ -119,9 +126,10 @@ def main():
     ax.set_title(ttl, fontsize=12.5, color=INK, pad=26, loc="left")
     ax.text(0, 1.015, verdict, transform=ax.transAxes, fontsize=9, color=INK2)
 
-    n = max(len(v) for v in data.values())
+    ns = sorted({len(v) for v in data.values()})
+    n = f"{ns[0]}~{ns[-1]}" if len(ns) > 1 else str(ns[0])
     fig.text(0.5, -0.02, f"빈 원 = 무결손 · 찬 원 = z_hat 절제 · 굵은 띠 = 절제 시드 min~max "
-             f"(n={n}) · 사전 예측: 낙폭(jepa) > 낙폭(none)",
+             f"(n={n}) · 값이 0 이면 정책이 예측기 출력을 쓰지 않는다는 뜻",
              ha="center", fontsize=8.5, color=INK2)
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

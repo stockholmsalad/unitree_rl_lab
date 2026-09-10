@@ -62,6 +62,8 @@ def main():
     p.add_argument("--metric", default="success_rate")
     p.add_argument("--out", default="results/distill_degradation/degradation_3cond.png")
     p.add_argument("--ckpt_note", default="", help="캡션에 적을 체크포인트 (예: model_1999)")
+    p.add_argument("--labels", default="",
+                   help="범례 이름 재지정. 예: --labels max=제안 설정,jepa=잠재 예측")
     p.add_argument("--degs", default="dropout,hole,occlusion",
                    help="패널로 그릴 결손 (게이트 3: freeze,latency,lowfps)")
     a = p.parse_args()
@@ -80,6 +82,10 @@ def main():
     for i, c in enumerate(CONDS):
         COLORS.setdefault(c, extra[i % len(extra)])
         LABELS.setdefault(c, c)
+    for kv in a.labels.split(","):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            LABELS[k.strip()] = v.strip()
     if not a.ckpt_note:
         cks = {m.group(0).strip("_") for f in glob.glob(os.path.join(a.dir, "*_curve_*.csv"))
                if (m := re.search(r"model_\d+", os.path.basename(f)))}
@@ -116,7 +122,8 @@ def main():
     axes[0].text(0.02, 52, "50%", fontsize=8, color=MUTED, va="bottom")
     axes[0].legend(frameon=False, fontsize=9.5, loc="lower left", labelcolor=INK)
 
-    nseed = max(len(v[1]) for v in data.values())
+    ns = sorted({len(v[1]) for v in data.values()})
+    nseed = f"{ns[0]}~{ns[-1]}" if len(ns) > 1 else str(ns[0])
     axis = "보조 목적함수" if "none" in CONDS else "인코더 초기화"
     fig.suptitle(f"DAgger 증류 학생 정책의 depth 결손 강인성 — {axis} {len(CONDS)}조건 × {nseed}시드",
                  fontsize=12.5, color=INK, y=1.0)
