@@ -80,7 +80,15 @@ def run_level(env, uenv, policy, robot, dev, level, degrade_fn):
     total = args_cli.warmup + args_cli.steps
     for t in range(total):
         with torch.inference_mode():
-            obs["pointcloud"] = degrade_fn(obs["pointcloud"], level)   # 정책이 보는 점군에 결손
+            # 교사는 점군이 아니라 특권 height scan 을 본다 — 결손시킬 대상이 없다.
+            # 레벨 0(무결손) 비교에서는 그냥 건너뛰면 되지만, 레벨이 0 이 아닌데
+            # 조용히 건너뛰면 "결손을 견딘 교사"라는 없는 결과가 만들어진다.
+            if "pointcloud" in obs.keys():
+                obs["pointcloud"] = degrade_fn(obs["pointcloud"], level)
+            elif level > 0.0:
+                raise RuntimeError(
+                    f"이 태스크의 관측에 pointcloud 가 없는데 결손 레벨 {level} 이 지정됐다. "
+                    "교사는 점군을 안 보므로 결손 비교의 대상이 아니다.")
             obs, _, dones, extras = env.step(policy(obs))
             # 리셋된 env 는 이전 지형의 stale 프레임을 버려야 한다(안 그러면 결손이 아니라
             # '순간이동한 지형을 보는' 시뮬 아티팩트를 측정하게 됨). 공간 결손은 no-op.
