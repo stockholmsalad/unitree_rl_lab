@@ -113,6 +113,11 @@ def gate1(data, label):
                          for sd in sorted({s for s, _, _ in per[c]})])[1]
                  for c in CONDS) * 100
 
+    if "jepa" not in means or "recon" not in means:
+        # 단일 조건(탐색적 실험) — 비교할 상대가 없으므로 표만 보고한다
+        print("\n  조건이 하나뿐이라 조건 간 판정을 하지 않는다. 값과 시드폭만 보고한다.")
+        return means
+
     d = (means["jepa"] - means["recon"]) * 100
     if V2:
         # v1 에서 절대 마진(2.0pp)을 미리 박았다가 실제 시드폭(2.6~7.8pp)이 그보다 커져
@@ -160,6 +165,9 @@ def gate23(data, degs, title, pred, label):
                    f">1.0 ({len(ls)-len(lm)}/{len(ls)}개 미붕괴)")
             summ[c] = (stat(a), a)
             print(f"        {c:<9} {len(seeds):>3}  {fmt_spread(a)}   {l50s}")
+
+        if len(summ) < 2:
+            continue      # 단일 조건 — 표만 보고하고 조건 간 판정은 생략
 
         # 판정: 조건간 평균 격차가 최대 조건내 시드폭을 넘어야만 신호로 인정한다.
         maxspread = max((s[0][2] - s[0][1]) for s in summ.values()) * 100
@@ -240,15 +248,16 @@ def gate4(data, label):
         drops[c] = d
         print(f"  {c:<9} {len(seeds):>3}  {sum(b)/len(b)*100:9.2f}  {sum(a)/len(a)*100:10.2f}"
               f"  {sum(d)/len(d):9.2f}  [{min(d):5.2f}, {max(d):5.2f}]")
-    if "jepa" not in drops:
+    if not drops:
         return
-    mj = sum(drops["jepa"]) / len(drops["jepa"])
+    ref = "jepa" if "jepa" in drops else next(iter(drops))
+    mj = sum(drops[ref]) / len(drops[ref])
     spread = max((max(v) - min(v)) for v in drops.values())
     print(f"\n  최대 조건내 시드폭 {spread:.2f}pp")
-    for other in [c for c in CONDS if c != "jepa" and c in drops]:
+    for other in [c for c in CONDS if c != ref and c in drops]:
         mo = sum(drops[other]) / len(drops[other])
         gap = mj - mo
-        print(f"  낙폭(jepa) − 낙폭({other}) = {gap:+.2f}pp   → "
+        print(f"  낙폭({ref}) − 낙폭({other}) = {gap:+.2f}pp   → "
               f"{'★ 신호 있음' if gap > spread else '판정력 없음 — 시드 노이즈에 묻힘'}")
     if all(abs(sum(v) / len(v)) < 1.0 for v in drops.values()):
         print("\n  판정: 세 조건 모두 낙폭 ~0 — 예측기는 장식이고 v2 개입 자체가 실패다.")
@@ -281,7 +290,8 @@ def main():
                "recon >= jepa" if V2 else "recon > scratch > jepa", label)
         gate23(data, [d for d in TEMPORAL if d in degs],
                "게이트 3 · 시간 결손 강인성  ★핵심",
-               f"jepa > recon 및 jepa > {CONDS[2]}", label)
+               ("jepa > recon 및 jepa > %s" % CONDS[2]) if len(CONDS) > 2
+               else "단일 조건 — 조건 간 예측 없음", label)
         blind_report(data, label)
         gate4(data, label)
 
