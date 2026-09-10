@@ -35,7 +35,7 @@ TITLES = {"dropout": "dropout (i.i.d. 점 결손)", "hole": "hole (블록 결손
           "latency": "latency (관측 지연)", "lowfps": "lowfps (갱신률 저하)",
           "blind": "blind (지형 무관 점군)"}
 # 런 이름은 v1 이 <날짜>_D_<조건>_s<시드>, v2 가 <날짜>_V2_<조건>_s<시드> 다.
-RUN_RE = re.compile(r"_(?:D|V2)_([a-z]+)_s(\d+)_model_")
+RUN_RE = re.compile(r"_(?:D|V\d+)_([a-z]+)_s(\d+)_model_")
 INK, MUTED, GRID = "#1a1a1a", "#5c5c5c", "#dcdcdc"
 
 
@@ -73,7 +73,13 @@ def main():
     if not DEGS:
         raise SystemExit(f"요청한 결손 {a.degs} 가 {a.dir} 에 없다. "
                          f"있는 것: {sorted({k[0] for k in data})}")
-    CONDS = [c for c in ORDER if any(k[1] == c for k in data)]
+    present = sorted({k[1] for k in data})
+    CONDS = [c for c in ORDER if c in present] + [c for c in present if c not in ORDER]
+    # 미등록 조건(탐색적 실험의 임의 이름)에 색·라벨을 채운다
+    extra = ["#2c6fbb", "#d1780a", "#7c4bb8", "#2f6f4f"]
+    for i, c in enumerate(CONDS):
+        COLORS.setdefault(c, extra[i % len(extra)])
+        LABELS.setdefault(c, c)
     if not a.ckpt_note:
         cks = {m.group(0).strip("_") for f in glob.glob(os.path.join(a.dir, "*_curve_*.csv"))
                if (m := re.search(r"model_\d+", os.path.basename(f)))}

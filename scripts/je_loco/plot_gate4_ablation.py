@@ -29,7 +29,7 @@ INK, INK2, GRID = "#1a1f24", "#5c666c", "#d9dfe2"
 COLORS = {"jepa": "#2c6fbb", "recon": "#d1780a", "none": "#7c4bb8", "scratch": "#7c4bb8"}
 LABELS = {"jepa": "JEPA", "recon": "Recon", "none": "None", "scratch": "Scratch"}
 ORDER = ["jepa", "recon", "none", "scratch"]
-RUN_RE = re.compile(r"_(?:D|V2)_([a-z]+)_s(\d+)_model_")
+RUN_RE = re.compile(r"_(?:D|V\d+)_([a-z]+)_s(\d+)_model_")
 
 
 def load(d):
@@ -63,7 +63,12 @@ def main():
     if not data:
         raise SystemExit(f"abl_curve_*.csv 가 없다: {a.dir}  "
                          f"(run_eval_v2.sh 를 ABLATE=1 로 돌렸는지 확인)")
-    conds = [c for c in ORDER if c in data]
+    present = sorted(data)
+    conds = [c for c in ORDER if c in present] + [c for c in present if c not in ORDER]
+    extra = ["#2c6fbb", "#d1780a", "#7c4bb8", "#2f6f4f"]
+    for i, c in enumerate(conds):
+        COLORS.setdefault(c, extra[i % len(extra)])
+        LABELS.setdefault(c, c)
 
     fig, ax = plt.subplots(figsize=(8.2, 0.62 * len(conds) + 2.2), dpi=200)
     drops, rows = {}, {}
