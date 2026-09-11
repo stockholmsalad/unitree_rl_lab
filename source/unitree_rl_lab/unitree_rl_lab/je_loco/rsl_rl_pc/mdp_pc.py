@@ -79,6 +79,46 @@ def frustum_camera_pattern(cfg: "FrustumPatternCfg", device: str):
     return torch.zeros_like(dirs), dirs
 
 
+def pinhole_camera_pattern(cfg: "PinholePatternCfg", device: str):
+    """D435i 영상 평면을 균등 타일링하는 ray 방향 — 등각 격자(frustum_camera_pattern) 대체.
+
+    왜 바꾸는가(2026-09-11 실측). frustum_camera_pattern 은 yaw·pitch 를 **각도** 등간격으로
+    뽑는데, 카메라는 핀홀 투영이라 영상 평면에서 등간격이다. 그래서 등각 격자의 모서리가
+    영상 밖으로 나간다 — 실측 내부 파라미터(fx=fy=390.33, 640×480)로 192 개 중 **42 개(22%)**
+    가 어떤 픽셀에도 대응하지 않는다. 윗줄 16 개 전부와 아랫줄 14 개, 즉 하늘과 **발밑 근거리**
+    가 통째로 날아간다. 영상을 16×12 로 균등 타일링하면 그 손실이 0 이 되고, 커버리지는
+    실제 카메라와 정확히 일치한다(FoV 는 어차피 같다: 78.69° × 63.17°).
+
+    셀 중심을 쓴다(가장자리 픽셀이 아니라). 방향은 광학 프레임 [x 우, y 하, z 전]에서 만들어
+    패턴 프레임 [x 전, y 좌, z 상]으로 옮긴다. 반환 순서는 row-major(행=v 위→아래,
+    열=u 좌→우)로 frustum_camera_pattern 과 같아, occlusion/hole 증강의 (12,16) 격자 구조가
+    그대로 유효하다.
+    """
+    u = (torch.arange(cfg.width, device=device, dtype=torch.float32) + 0.5) * (cfg.img_width / cfg.width)
+    v = (torch.arange(cfg.height, device=device, dtype=torch.float32) + 0.5) * (cfg.img_height / cfg.height)
+    vv, uu = torch.meshgrid(v, u, indexing="ij")
+    x_opt = (uu.reshape(-1) - cfg.cx) / cfg.fx
+    y_opt = (vv.reshape(-1) - cfg.cy) / cfg.fy
+    dirs = torch.stack([torch.ones_like(x_opt), -x_opt, -y_opt], dim=-1)
+    dirs = dirs / dirs.norm(dim=-1, keepdim=True)
+    return torch.zeros_like(dirs), dirs
+
+
+@configclass
+class PinholePatternCfg(PatternBaseCfg):
+    """실측 D435i 깊이 내부 파라미터(2026-09-11, 640×480). deploy_real 과 같은 값을 쓴다."""
+
+    func: Callable = pinhole_camera_pattern
+    fx: float = 390.330
+    fy: float = 390.330
+    cx: float = 316.090
+    cy: float = 239.581
+    img_width: int = 640
+    img_height: int = 480
+    width: int = 16          # yaw 열 (좌→우)
+    height: int = 12         # pitch 행 (상→하). 16×12=192점
+
+
 @configclass
 class FrustumPatternCfg(PatternBaseCfg):
     """D435i 전방 프러스텀 ray 패턴 cfg (표준 grid 패턴 대체)."""

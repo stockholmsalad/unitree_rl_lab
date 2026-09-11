@@ -33,8 +33,16 @@ import numpy as np
 # 출처: je_loco/rsl_rl_pc/env_cfg.py 의 PCSceneCfg.pc_scanner 와
 #       je_loco/rsl_rl_pc/mdp_pc.py 의 FrustumPatternCfg.
 # 하나라도 어긋나면 정책은 학습 때와 다른 지형을 보게 된다. check_against_sim() 참조.
+# 2026-09-11 실측(D435i 깊이 640×480). 시뮬 PinholePatternCfg 와 같은 값이어야 한다.
+FX = FY = 390.330
+CX, CY = 316.090, 239.581
+IMG_W, IMG_H = 640, 480
+# 구(등각) 격자용. PINHOLE=False 로 되돌릴 때만 쓰인다.
 HFOV_DEG = 78.7
 VFOV_DEG = 63.1
+# True  = 영상 평면 균등 타일링(PinholePatternCfg, V7~). 광선 낭비 0.
+# False = 각도 등간격(FrustumPatternCfg, V2~V6). 실측상 192 중 42 개가 영상 밖.
+PINHOLE = True
 WIDTH = 16              # yaw 열 (좌→우)
 HEIGHT = 12             # pitch 행 (상→하)
 MOUNT_POS = (0.325, 0.0, 0.045)   # base 원점 기준 카메라 위치 [m]
@@ -47,11 +55,19 @@ NUM_POINTS = WIDTH * HEIGHT
 
 
 def pattern_directions() -> np.ndarray:
-    """frustum_camera_pattern 과 **같은 순서**의 단위 방향 (192, 3), 패턴 프레임.
+    """시뮬 ray 패턴과 **같은 순서**의 단위 방향 (192, 3), 패턴 프레임.
 
-    행 = pitch 상→하, 열 = yaw 좌→우, row-major. 이 순서가 곧 occlusion/hole 증강이
-    쓰는 (12, 16) 격자다.
+    행 = 상→하, 열 = 좌→우, row-major. 이 순서가 곧 occlusion/hole 증강이 쓰는
+    (12, 16) 격자다. PINHOLE 이 시뮬 cfg 와 어긋나면 정책이 학습 때와 다른 점을 받는다.
     """
+    if PINHOLE:
+        u = (np.arange(WIDTH) + 0.5) * (IMG_W / WIDTH)
+        v = (np.arange(HEIGHT) + 0.5) * (IMG_H / HEIGHT)
+        vv, uu = np.meshgrid(v, u, indexing="ij")
+        x_opt = (uu.reshape(-1) - CX) / FX
+        y_opt = (vv.reshape(-1) - CY) / FY
+        d = np.stack([np.ones_like(x_opt), -x_opt, -y_opt], axis=-1)
+        return d / np.linalg.norm(d, axis=-1, keepdims=True)
     hh = math.radians(HFOV_DEG) * 0.5
     vh = math.radians(VFOV_DEG) * 0.5
     yaw = np.linspace(hh, -hh, WIDTH)        # 좌(+y) → 우(-y)
@@ -147,9 +163,16 @@ def check_against_sim() -> None:
 
     cfg = PCSceneCfg().pc_scanner
     pat = cfg.pattern_cfg
+    sim_pinhole = hasattr(pat, "fx")
+    if sim_pinhole != PINHOLE:
+        raise SystemExit(
+            f"격자 모델 불일치: deploy PINHOLE={PINHOLE}, sim={'pinhole' if sim_pinhole else 'frustum'}")
     bad = []
-    for name, ours, theirs in [
-        ("hfov", HFOV_DEG, pat.hfov_deg), ("vfov", VFOV_DEG, pat.vfov_deg),
+    pairs = ([("fx", FX, getattr(pat, "fx", None)), ("fy", FY, getattr(pat, "fy", None)),
+              ("cx", CX, getattr(pat, "cx", None)), ("cy", CY, getattr(pat, "cy", None))]
+             if PINHOLE else
+             [("hfov", HFOV_DEG, pat.hfov_deg), ("vfov", VFOV_DEG, pat.vfov_deg)])
+    for name, ours, theirs in pairs + [
         ("width", WIDTH, pat.width), ("height", HEIGHT, pat.height),
         ("max_distance", MAX_DISTANCE, cfg.max_distance),
         ("mount_pos", MOUNT_POS, tuple(cfg.offset.pos)),
