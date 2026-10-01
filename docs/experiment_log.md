@@ -95,3 +95,17 @@ rollout 전체 trajectory 를 한 번에 rollout 길이(100)로 패딩. trajecto
 에피소드 경계에서 GRU 상태 0. 메모리는 넘어짐 횟수와 무관. rollout latent 재현 테스트(중간 reset, 이월 상태) 통과.
 depth fp16 저장은 유지.
 **확인할 것:** 스폰 직후 반복 넘어짐 env 가 있는지(지형별 종료 통계) — 학습 curve 를 볼 때 같이 본다.
+
+## 2026-10-02 — gru_baseline_s42 결과 (3000 iter, pilab, 약 8.3 h)
+
+그림: `results/jepa_loco/figs/gru_baseline_s42_curves.png`. play 영상: `results/jepa_loco/videos/gru_baseline_s42_play.mp4`.
+
+- **쉬운 지형에서는 걷는다**: 최고점(iter ~1300) 에피소드 길이 809/1000, lin vel 추종 1.00/1.5, play 에서 네 발 보행.
+- **지형 커리큘럼 진행 실패**: terrain level 최대 0.52 / 9 (마지막 200 iter 평균 0.40). 넘어짐 종료 비율 바닥도 약 30%.
+- **붕괴 3회**: iter 0–120 (넘어짐 99%, 에피소드 길이 20), ~1600, 2500–2750 (보상 −150 스파이크).
+- **원인 1 (초기 붕괴) — 자살 균형**: iter 5–15 에 추종 보상 0.30 vs 페널티 합 약 1.3 → 에피소드 누적 보상이 음수라
+  빨리 넘어질수록 손해가 적다. 이 보상 설정에는 종료 페널티가 없고, 원래 task 의 명령 커리큘럼(±0.1 에서 시작)을
+  내가 고정 범위로 바꿔 초기 추종 보상이 낮아진 것이 겹쳤다. 앞선 OOM(trajectory 폭증)도 이 구간에서 났다.
+- **원인 2 (후반 붕괴) — value 발산**: iter ~1400 부터 value loss 1e-2 → 1e3, 이어 action std 0.32 → 0.62,
+  action_rate 페널티 3배, 추종 절반. value 발산의 근본 원인은 미확인(보상 이상치 −150 관찰).
+- latent z std 0.72 로 증가, 죽은 차원 0 — 표현 붕괴는 없음.
