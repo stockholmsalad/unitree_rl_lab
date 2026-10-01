@@ -29,7 +29,7 @@ Depth 시퀀스로부터 행동 조건부 미래 latent를 JEPA 방식으로 예
 | Depth 인코딩 / Predictor 주기 | 10 Hz (5 제어 스텝마다 갱신, 사이에는 마지막 값 재사용) |
 | Context 길이 | depth 20 프레임 (2.0 s) |
 | 예측 horizon H | {0.5, 1.0} s 다중 horizon (horizon embedding으로 조건화) |
-| Depth 지연 | 1~3 제어 스텝 랜덤 |
+| Depth 지연 | 1~3 제어 스텝 랜덤 (실제 지연). IsaacLab 고유 지연 d0 = 0 (실측 2026-10-01: 렌더 직후 순간이동이 다음 렌더에 바로 반영) → 추가 지연 d_add = d − d0 |
 
 ## 4. 아키텍처
 
@@ -42,7 +42,10 @@ Depth 시퀀스로부터 행동 조건부 미래 latent를 JEPA 방식으로 예
    - 시뮬레이터: D435i intrinsic을 112×64로 스케일해 **직접 렌더링** (Omniverse는 비정사각 픽셀 미지원 → fx·fy 평균, 차이 0.95%)
    - 실기: 848×480 → 112×64를 **mask-aware nearest 또는 median**으로 변환. **bilinear·area 금지** (계단 모서리에 가짜 중간 depth 생성)
    - 실기 변환과 시뮬 출력의 통계(유효 픽셀 비율, depth 히스토그램)를 `scripts/jepa_loco/compare_depth_stats.py`로 Phase 2 전에 비교한다
-2. **Context 인코더** (backbone 교체 가능): 2채널 입력, 8×8 패치 → 112 토큰 → scan → 프레임 latent → 시간축 backbone → `z_t` (dim 128, config)
+2. **Context 인코더** (backbone 교체 가능): 2채널 입력 프레임 1장 [N,2,64,112] → **CNN** → `f_t` [N,128] → 시간축 backbone → `z_t` [N,128] (dim config)
+   - 프레임 스택 없음. depth 는 10 Hz 로 1장씩 CNN 에 넣고, backbone 은 새 프레임이 온 스텝에만 갱신한다(`depth_fresh` 게이트)
+   - nominal context 2 s 는 truncated BPTT 길이로 보장: PPO rollout `num_steps_per_env = 100` 제어 스텝 = depth 20 프레임
+   - **CNN 과 입력 형식은 GRU·Mamba 비교에서 동일하게 유지**한다 (시간축 backbone 만 교체). 8×8 패치 토큰 인코더는 이번 비교 범위에서 제외
 3. **고유수용감각 인코더 (MLP)**: 각속도 3 + 중력 투영 3 + 속도 명령 3 + 관절 위치 12 + 관절 속도 12 + 이전 행동 12 = 45차원 → proprio 임베딩
 4. **Predictor** (backbone 교체 가능): `(z_t, proprio 임베딩, 조건 c, horizon embedding) → ẑ_{t+H}`
 5. **Target 인코더**: Context 인코더의 EMA 사본, stop-gradient. Context 인코더와 같은 2채널 입력. 출력 `z̄_{t+H}`
@@ -95,8 +98,8 @@ K개 후보는 실행할 행동이 아니라 **관측 인코더의 일부**다(I
 각 단계는 완료 기준을 만족하고 사용자 확인을 받은 뒤 다음으로 넘어간다.
 
 - **Phase 0 — 환경 점검**: 설치된 IsaacLab 버전과 Go2 관련 기존 task/asset, 카메라(TiledCamera 등) API를 **설치된 소스에서 직접 확인**. 기억에 의존해 API를 추측하지 말 것. 카메라를 위 extrinsic으로 붙여 depth 샘플 이미지를 저장.
-- **Phase 1 — Teacher**: heightscan 기반 PPO teacher. 지형 전체 커리큘럼 통과. 이후 반사실 평가의 분기 실행기로 사용한다.
-- **Phase 2 — Depth student (GRU, JEPA 없음)**: depth + proprio PPO 기준선. 학습 안정성 확인.
+- **Phase 1 — Teacher**: heightscan 기반 PPO teacher. **보류 (2026-10-01 결정)** — Phase 2 depth PPO 가 명확히 학습되지 않을 때만 teacher + DAgger 를 fallback 으로 추가한다. 반사실 평가(Phase 4)의 분기 실행기가 필요해지면 다시 검토. critic 관측 그룹(heightscan 포함)은 teacher 용으로 재사용 가능하게 유지.
+- **Phase 2 — Depth student (GRU, JEPA 없음)**: depth + proprio PPO 기준선을 **먼저** 진행. rough·stairs 학습 curve 와 평가 결과 확보. task `Unitree-Go2-JepaLoco-DepthGRU`.
 - **Phase 3 — JEPA 보조손실 (GRU, 온라인)**: Predictor + EMA Target 추가. 조건 c 계산 로직은 단위 테스트 필수(몸통 좌표계 변환, yaw wrap-around). 실현 변위 (Δx, Δy, Δyaw) 히스토그램을 지형별로 출력해 primitive 주변 샘플 공백 확인.
 - **Phase 4 — 반사실 평가 도구**: 지형별(비정형, 오르는 계단, 내려가는 계단, gap) 저장 상태 500개 × K개 primitive를 teacher로 H 동안 분기 실행 → (ẑ, z̄) 쌍 생성. 지표: retrieval top-1 정확도(우연 1/K), 예측/실제 거리 행렬 Spearman 상관, 조건 셔플 시 오차 증가량. 발 주변 heightmap linear probe(속도 구간별 보고: v ≥ 0.76 m/s는 현재 관측 기반, 미만은 메모리 기반 예견).
 - **Phase 5 — 후보 입력 정책**: K개 예측 latent attention pooling을 정책 입력으로. 비교군: (a) 예측기 없음, (b) 무조건부 latent 1개, (c) K개 조건부 latent. 지표: 지형별 성공률, 계단 모서리 발끝 충돌 횟수.

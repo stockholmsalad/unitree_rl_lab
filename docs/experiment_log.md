@@ -53,3 +53,26 @@ depth 원점 = 왼쪽 IR, 랜덤화 위치 ±2 cm·pitch ±3°. 입력 = 112×64
   - reset 전 USD xform 스택(translate/orient/scale, local/world)은 두 카메라 완전히 동일 → 런타임에 갈라짐. 원인 미상.
   - 영향: 정책 경로(112×64 직접 렌더링)는 해석해와 일치하므로 무관. 실기 변환 함수의 **시뮬 내** 검증만 막힘
     (단위 테스트로는 검증됨). 실기 데이터로 `compare_depth_stats.py` 를 돌릴 때 재검토.
+
+## 2026-10-01 — Phase 2 depth GRU PPO 구현 (Z790 스모크)
+
+**결정 (사용자):** CNN 프레임 인코더(GRU·Mamba 공통), 프레임 단위 GRU(스택 없음), unroll 20 depth 프레임,
+teacher·DAgger 보류(fallback), JEPA 는 기준선 curve 확보 후.
+
+**구현:** `Unitree-Go2-JepaLoco-DepthGRU`. actor = `DepthRecurrentActor` (CNN 2→16→32→64 → 128, GRUCell 128,
+proprio 정규화 45 + z 128 → MLP 512-256-128 → 12). critic = MLP (proprio + 선속도 + 토크 + heightscan).
+`depth_fresh` 플래그로 GRU 를 10 Hz 에만 갱신. rollout 100 스텝 = BPTT 길이.
+렌더링은 `render_interval` = 20 물리 스텝(10 Hz), 카메라 `update_period=0` (env reset 으로 인한 갱신 위상 어긋남 방지).
+reset 이전에 찍힌 렌더는 버린다. latent std 를 `Loss/latent_std_*` 로 기록.
+
+**검증:**
+- 단위 테스트 20개. rollout 스텝별 latent 와 update 의 trajectory 재계산이 중간 reset 포함 atol 1e-5 일치.
+- 스모크 학습(32 env, 3 iter) 정상 완주, 752 steps/s (5070 Ti).
+- **d0 = 0**: 렌더 직후 base 0.15 m 순간이동 → 다음 렌더의 중앙 depth 변화 0.285 m (기하 예측 0.30 m).
+- fresh 간격 3–7 스텝(주기 5 ± 추가 지연 1–3), reset 직후 프레임 전까지 전부 mask 0.
+- 경계 결측을 절대 차(0.15 m)로 했더니 먼 지면이 원근 때문에 점무늬 결측 → clip 된 depth 의 상대 차(0.2)로 변경.
+- 8 env 관측 영상 정상(계단 모서리·낙차·왼쪽 띠·hole). 첫 점검에서 위아래가 뒤집혀 보인 env 0 영상은 재현 안 됨
+  (넘어진 로봇으로 추정, 당시 자세 미기록 — 이후 점검 그림에 자세·지형 표기).
+
+**명세와 다른 점 (확인 필요):** 지형 커리큘럼을 IsaacLab 표준 `terrain_levels_vel`(종류 혼합, 난이도 행 진행)로 구현.
+명세는 종류별 단계 진행(평지 → 비정형 → 오르는 계단 → 내려가는 계단 → gap).

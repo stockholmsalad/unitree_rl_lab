@@ -162,7 +162,7 @@ def main():
     fig.colorbar(im, ax=axes, shrink=0.6, label="depth [m]")
     fig.savefig(os.path.join(args_cli.out_dir, "depth_samples.png"), dpi=110)
 
-    print(json.dumps(report["per_env"], indent=2))
+    print(json.dumps(report["per_env"], indent=2), flush=True)
 
 
 if __name__ == "__main__":

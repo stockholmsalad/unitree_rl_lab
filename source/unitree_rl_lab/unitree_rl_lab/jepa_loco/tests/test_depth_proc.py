@@ -58,3 +58,25 @@ def test_downsample_holes():
     assert (downsample_real(d, (64, 112), mode="median", min_valid_frac=0.6) == 0).all()
     d[:] = 0.0
     assert (downsample_real(d, (64, 112), mode="nearest") == 0).all()
+
+
+def test_noise_shapes_and_effects():
+    from unitree_rl_lab.jepa_loco.sensors.depth_noise import depth_noise
+
+    torch.manual_seed(0)
+    d = torch.full((8, 64, 112), 1.0)
+    d[:, :, 60:] = 1.8  # 큰 경계
+    clean = depth_noise(d, fx=59.0, gauss_coef=0.0, edge_drop_prob=0.0, hole_prob=0.0, left_band=False)
+    assert torch.equal(clean, d)
+    edge = depth_noise(d, fx=59.0, gauss_coef=0.0, edge_drop_prob=1.0, hole_prob=0.0, left_band=False)
+    assert (edge[:, :, 59:61] == 0).all() and (edge[:, :, :58] == 1.0).all()
+    holes = depth_noise(d, fx=59.0, gauss_coef=0.0, edge_drop_prob=0.0, hole_prob=1.0, left_band=False)
+    assert ((holes == 0).flatten(1).sum(1) >= 4).all()
+    noisy = depth_noise(d, fx=59.0, edge_drop_prob=0.0, hole_prob=0.0, left_band=False)
+    assert 0.005 < (noisy[:, :, :50] - 1.0).std() < 0.015  # σ = 0.01·1²
+    # 먼 지면(> clip_far)의 큰 절대 차는 경계가 아니다
+    far = torch.linspace(2.5, 9.0, 64)[:, None].expand(64, 112)[None].repeat(2, 1, 1).contiguous()
+    assert (depth_noise(far, fx=59.0, gauss_coef=0.0, edge_drop_prob=1.0, hole_prob=0.0, left_band=False) > 0).all()
+    # 원래 결측은 결측으로 유지
+    d[:, 0, :] = 0
+    assert (depth_noise(d, fx=59.0)[:, 0, :] == 0).all()
