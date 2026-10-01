@@ -75,9 +75,9 @@ class DepthRecurrentActor(MLPModel):
     # ---- forward ----
     def _encode(self, depth: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         """valid 인 프레임만 CNN 에 통과(10 Hz 프레임은 5스텝에 1번)."""
-        f = depth.new_zeros(*valid.shape, self.cnn.feat_dim)
+        f = torch.zeros(*valid.shape, self.cnn.feat_dim, device=depth.device)
         if valid.any():
-            f[valid] = self.cnn(depth[valid])
+            f[valid] = self.cnn(depth[valid].float())  # 관측은 fp16 로 저장된다
         return f
 
     def get_latent(

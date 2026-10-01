@@ -66,6 +66,13 @@ def test_actor_rollout_shapes_and_reset():
     assert (h[2] == 0).all() and (h[0] != 0).any()
 
 
+def test_fp16_depth_obs():
+    a = _actor()
+    o = _obs()
+    o["depth"] = o["depth"].half()
+    assert a(o).dtype == torch.float32
+
+
 def test_stale_frames_reuse_latent():
     a = _actor()
     a(_obs())

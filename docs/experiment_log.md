@@ -83,3 +83,11 @@ pilab (RTX PRO 6000, 97 GB), 2048 env, rollout 100 스텝: **16,666 steps/s**, i
 (수집 9.4 s / 학습 2.9 s — 렌더링·물리가 지배). → 1000 iter ≈ 3.4 h, 1500 ≈ 5.1 h, 3000 ≈ 10.2 h.
 env 수 2048 근거: rollout depth 저장 ≈ 2048×100×57 KB ≈ 12 GB (+ 미니배치 패딩 복사본) 로 메모리 여유,
 iteration 당 20만 스텝. 4096 은 처리량 이득 미측정.
+
+## 2026-10-01 — OOM 수정 (gru_baseline_s42, iter 22)
+
+pilab 2048 env 본 학습이 iter 22 에서 48.85 GiB 단일 할당 OOM. 원인: rsl_rl `recurrent_mini_batch_generator` 가
+rollout 전체 trajectory 를 한 번에 rollout 길이(100)로 패딩. trajectory 수 = env 수 + 에피소드 종료 수라
+(추정 ~8,500) env 수 기준으로 잡은 메모리 추정(12 GB)이 틀렸다.
+수정: (1) 미니배치(env 구간)별 패딩 `SlicedPadRolloutStorage` — 원본과 배치 동일함을 테스트로 확인, 최대치 ≈ 1/4,
+(2) depth 관측 fp16 저장 — 절반. 합계 약 1/8.

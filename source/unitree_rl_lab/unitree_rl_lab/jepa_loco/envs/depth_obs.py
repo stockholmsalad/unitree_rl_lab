@@ -72,7 +72,8 @@ class DepthFrame(ManagerTermBase):
             self.release_at[take] = step + d[take]
         self.fresh = self.release_at == step
         self.current[self.fresh] = self.pending[self.fresh]
-        return to_two_channel(self.current, near, far)
+        # fp16: rollout 저장·trajectory 패딩 메모리 절반 ([0,1] 범위라 정밀도 충분). 모델이 float32 로 올린다.
+        return to_two_channel(self.current, near, far).half()
 
 
 def depth_fresh(env: ManagerBasedRLEnv) -> torch.Tensor:
