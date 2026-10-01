@@ -76,3 +76,10 @@ reset 이전에 찍힌 렌더는 버린다. latent std 를 `Loss/latent_std_*` �
 
 **명세와 다른 점 (확인 필요):** 지형 커리큘럼을 IsaacLab 표준 `terrain_levels_vel`(종류 혼합, 난이도 행 진행)로 구현.
 명세는 종류별 단계 진행(평지 → 비정형 → 오르는 계단 → 내려가는 계단 → gap).
+
+## 2026-10-01 — pilab 처리량 측정 · env 수 결정
+
+pilab (RTX PRO 6000, 97 GB), 2048 env, rollout 100 스텝: **16,666 steps/s**, iteration 12.3 s
+(수집 9.4 s / 학습 2.9 s — 렌더링·물리가 지배). → 1000 iter ≈ 3.4 h, 1500 ≈ 5.1 h, 3000 ≈ 10.2 h.
+env 수 2048 근거: rollout depth 저장 ≈ 2048×100×57 KB ≈ 12 GB (+ 미니배치 패딩 복사본) 로 메모리 여유,
+iteration 당 20만 스텝. 4096 은 처리량 이득 미측정.
