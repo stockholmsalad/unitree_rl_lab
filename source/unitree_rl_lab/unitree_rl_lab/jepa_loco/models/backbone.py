@@ -35,12 +35,17 @@ class SequenceBackbone(nn.Module):
         return self.output(h), h
 
     def gated_sequence(
-        self, x: torch.Tensor, h0: torch.Tensor, update: torch.Tensor
+        self, x: torch.Tensor, h0: torch.Tensor, update: torch.Tensor, reset: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """x [T, N, in_dim], update [T, N] → z [T, N, out_dim], 마지막 상태."""
+        """x [T, N, in_dim], update [T, N] → z [T, N, out_dim], 마지막 상태.
+
+        reset [T, N]: 해당 스텝 처리 전에 상태를 0 으로 (시퀀스 중간의 에피소드 시작).
+        """
         h = h0
         outs = []
         for t in range(x.shape[0]):
+            if reset is not None:
+                h = torch.where(reset[t][:, None], torch.zeros_like(h), h)
             z, h = self.gated_step(x[t], h, update[t])
             outs.append(z)
         return torch.stack(outs), h

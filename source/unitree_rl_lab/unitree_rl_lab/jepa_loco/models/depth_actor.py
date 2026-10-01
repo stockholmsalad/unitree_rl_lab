@@ -9,9 +9,10 @@ backbone 갱신을 게이트하고, 나머지 스텝은 마지막 z_t 를 재사
 PPO 연결 (rsl_rl 5.0.1 기준):
 - rollout: ``act()`` 가 스텝마다 ``get_hidden_state()`` 를 저장한 뒤 forward(masks=None) 로 1스텝 진행.
   ``process_env_step()`` 이 ``reset(dones)`` 로 끝난 env 의 상태만 0 으로 만든다.
-- update: ``recurrent_mini_batch_generator`` 가 rollout(num_steps_per_env 스텝)을 done 기준으로
-  trajectory 로 잘라 패딩하고, 각 trajectory 시작 시점의 저장된 상태를 h0 로 준다.
-  forward(masks, hidden_state) 가 trajectory 전체를 다시 펼친다 = truncated BPTT, 길이 ≤ num_steps_per_env.
+- update: ``ResetMaskRolloutStorage`` (agents/ppo.py) 가 env 별 rollout 시퀀스 [T=num_steps_per_env, B] 를
+  패딩·복사 없이 주고, rollout 시작 시점의 저장된 상태를 h0, 에피소드 경계를 ``traj_start`` 로 준다.
+  forward 가 시퀀스를 다시 펼치며 경계에서 상태를 0 으로 = rollout 과 같은 계산, truncated BPTT 길이 T.
+  (rsl_rl 기본 trajectory 패딩도 지원하지만 depth 에서는 메모리가 넘어짐 횟수에 비례해 OOM.)
 """
 
 from __future__ import annotations
@@ -92,11 +93,12 @@ class DepthRecurrentActor(MLPModel):
             z, self.h = self.backbone.gated_step(self._encode(depth, fresh), self.h, fresh)
             self.last_z = z.detach()
             return torch.cat([proprio, z], dim=-1)
-        # update: 패딩된 trajectory [T, B, ...]
+        # update: [T, B, ...] — rsl_rl 패딩 trajectory, 또는 패딩 없는 env 시퀀스 + traj_start (ResetMaskRolloutStorage)
         if hidden_state is None:
             raise ValueError("배치 모드에는 저장된 hidden state 가 필요하다")
         valid = fresh & masks
-        z, _ = self.backbone.gated_sequence(self._encode(depth, valid), hidden_state[0], valid)
+        reset = obs["traj_start"][..., 0].bool() if "traj_start" in obs.keys() else None
+        z, _ = self.backbone.gated_sequence(self._encode(depth, valid), hidden_state[0], valid, reset)
         return unpad_trajectories(torch.cat([proprio, z], dim=-1), masks)
 
     # ---- 순환 상태 ----
