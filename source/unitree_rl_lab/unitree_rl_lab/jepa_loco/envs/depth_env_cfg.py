@@ -164,5 +164,7 @@ class JepaDepthEnvCfg_PLAY(JepaDepthEnvCfg):
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 5
         self.scene.terrain.terrain_generator.num_cols = 5
+        # 육안 판정이 쉬운 지형에만 머물지 않도록 전 난이도에 스폰
+        self.scene.terrain.max_init_terrain_level = self.scene.terrain.terrain_generator.num_rows - 1
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None

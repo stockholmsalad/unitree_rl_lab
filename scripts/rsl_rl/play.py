@@ -135,8 +135,11 @@ def main():
 
     # export policy
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
-    runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
+    try:
+        runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
+        runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
+    except NotImplementedError as e:  # 커스텀 모델(jepa_loco)은 배포 내보내기 미구현
+        print(f"[INFO] export skipped: {e}")
 
     dt = env.unwrapped.step_dt
 
@@ -153,7 +156,10 @@ def main():
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, _, dones, _ = env.step(actions)
+            # 순환 정책: 끝난 env 의 hidden state 초기화 (학습 때와 동일)
+            if getattr(policy, "is_recurrent", False):
+                policy.reset(dones)
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
