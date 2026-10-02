@@ -13,6 +13,7 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
@@ -22,9 +23,11 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     ObservationsCfg,
     RobotEnvCfg,
     RobotSceneCfg,
+    RewardsCfg,
 )
 
 from ..sensors.d435i_cfg import D435iParams, make_tiled_camera_cfg
+from .command_schedule import ScheduledVelocityCommandCfg
 from .depth_obs import DepthFrame, depth_fresh
 
 D435I = D435iParams()
@@ -122,16 +125,23 @@ class JepaObservationsCfg:
 
 @configclass
 class JepaCommandsCfg(CommandsCfg):
-    """명령 랜덤화 고정 범위 (CLAUDE.md §6). 명령 커리큘럼은 쓰지 않는다."""
+    """처음 500 iteration에 걸쳐 명세의 명령 범위까지 선형 확장."""
 
-    base_velocity = mdp.UniformVelocityCommandCfg(
+    base_velocity = ScheduledVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.1,
         heading_command=False,
         debug_vis=True,
-        ranges=mdp.UniformVelocityCommandCfg.Ranges(lin_vel_x=(-0.3, 1.0), lin_vel_y=(-0.4, 0.4), ang_vel_z=(-0.8, 0.8)),
+        ranges=ScheduledVelocityCommandCfg.Ranges(
+            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
+        ),
     )
+
+
+@configclass
+class JepaRewardsCfg(RewardsCfg):
+    termination = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
 
 @configclass
@@ -144,6 +154,7 @@ class JepaDepthEnvCfg(RobotEnvCfg):
     scene: JepaSceneCfg = JepaSceneCfg(num_envs=1024, env_spacing=2.5)
     observations: JepaObservationsCfg = JepaObservationsCfg()
     commands: JepaCommandsCfg = JepaCommandsCfg()
+    rewards: JepaRewardsCfg = JepaRewardsCfg()
     curriculum: JepaCurriculumCfg = JepaCurriculumCfg()
 
     depth_period_steps: int = 5
@@ -161,6 +172,8 @@ class JepaDepthEnvCfg(RobotEnvCfg):
 class JepaDepthEnvCfg_PLAY(JepaDepthEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.commands.base_velocity.initial_ranges = self.commands.base_velocity.final_ranges.copy()
+        self.commands.base_velocity.ranges = self.commands.base_velocity.final_ranges.copy()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 5
         self.scene.terrain.terrain_generator.num_cols = 5
