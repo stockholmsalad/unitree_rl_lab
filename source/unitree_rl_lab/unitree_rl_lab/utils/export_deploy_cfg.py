@@ -39,7 +39,9 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
     cfg["commands"] = {}
     if hasattr(env.cfg.commands, "base_velocity"):  # some environments do not have base_velocity command
         cfg["commands"]["base_velocity"] = {}
-        if hasattr(env.cfg.commands.base_velocity, "limit_ranges"):
+        if hasattr(env.cfg.commands.base_velocity, "final_ranges"):
+            ranges = env.cfg.commands.base_velocity.final_ranges.to_dict()
+        elif hasattr(env.cfg.commands.base_velocity, "limit_ranges"):
             ranges = env.cfg.commands.base_velocity.limit_ranges.to_dict()
         else:
             ranges = env.cfg.commands.base_velocity.ranges.to_dict()

@@ -47,3 +47,22 @@ class DepthGRUPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class BlindActorCfg(RslRlMLPModelCfg):
+    class_name: str = "unitree_rl_lab.jepa_loco.models.proprio_actor:ProprioRecurrentActor"
+    backbone: str = "gru"
+    latent_dim: int = 128
+
+
+@configclass
+class BlindGRUPPORunnerCfg(DepthGRUPPORunnerCfg):
+    experiment_name = "jepa_loco_blind_gru"
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    actor = BlindActorCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
