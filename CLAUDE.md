@@ -92,7 +92,10 @@ K개 후보는 실행할 행동이 아니라 **관측 인코더의 일부**다(I
 - **명령 랜덤화**: vx ∈ [−0.3, 1.0], vy ∈ [−0.4, 0.4], ωz ∈ [−0.8, 0.8]
 - **Phase 2 재학습 명령 스케줄 (2026-10-02 결정):** 세 축 모두 [−0.1, 0.1]에서 시작해 전역 학습 iteration 0~500 동안 위 최종 범위까지 선형 확장한다. 성능 적응형 명령 커리큘럼은 사용하지 않는다. 500 iteration 이후에는 위 명세 범위를 유지한다. depth·blind가 동일한 전역 스케줄을 사용한다.
 - **Phase 2 재학습 종료 보상 (2026-10-02 결정):** `is_terminated` weight −200 (제어 dt 0.02 s 적용 후 종료 시 −4). 시간 초과는 제외한다. 기존 entropy 계수 0.01과 학습률은 유지한다.
-- **Phase 2 대조군:** 카메라 센서를 생성하지 않는 proprio-only GRU PPO (`Unitree-Go2-JepaLoco-BlindGRU`). depth 실험과 보상·명령 스케줄·지형·critic·PPO 설정을 공유한다. 두 실험 모두 3000 iteration으로 비교하고 학습 곡선·play 영상을 확인한다.
+- **Phase 2 대조군 (2026-10-02 갱신):** 두 blind 모두 카메라 센서를 생성하지 않고, depth 실험과 보상·명령 스케줄·지형·critic·PPO 설정·rollout 길이를 공유한다. 3000 iteration으로 비교하고 학습 곡선·play 영상을 확인한다.
+  - **첫 비교군 = 기억 없는 proprio-only MLP** (`Unitree-Go2-JepaLoco-BlindMLP`): depth 정책의 MLP head(512-256-128) 그대로, 입력에서 z_t 만 뺀 [proprio 45] → 12. **depth 경로(CNN+GRU) 하나만 다른** 대조군이라 "depth 효과"는 이것과 비교한다.
+  - **강한 대조군 = proprio GRU** (`Unitree-Go2-JepaLoco-BlindGRU`): proprio 를 50 Hz GRU 에 넣어 기억을 준다. depth 정책에는 proprio 기억이 없으므로 depth 와의 차이에는 proprio 기억 효과가 섞인다 — "proprio 기억만으로 어디까지 되는가"의 참고선으로만 쓴다.
+- **명령 스케줄 일관성:** 스케줄의 `steps_per_iteration` 은 PPO `num_steps_per_env` 와 같아야 하며, 다르면 학습 시작 시 오류. `--resume` 은 checkpoint iteration × rollout 길이로 `common_step_counter` 를 복원하고 명령을 재샘플한다(2026-10-02 수정 전 코드로는 resume 금지).
 - **커리큘럼** (단계별 성공률 기준 자동 진행): 평지 → 비정형 → 오르는 계단 8~20 cm → **내려가는 계단 8~20 cm** → gap 10~30 cm
 - depth 렌더링 비용 때문에 env 수는 GPU 메모리를 보고 결정하고, 결정 근거를 기록할 것.
 

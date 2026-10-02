@@ -128,3 +128,30 @@ blind task는 depth 카메라·depth 관측을 만들지 않고 proprio GRU를 �
 value 범위가 기록됐다. blind 스모크의 `reward_min/termination`은 −4.0으로 설정한 종료 페널티가 실제
 적용됨을 확인했다. 3000 iteration 본 학습은 pilab에서 실행 예정이다.
 학습 결과와 play 판정은 본 학습 후 추가 기록한다.
+
+## 2026-10-02 — 기억 없는 blind 대조군 추가, 스케줄 검사, resume 수정 (Z790)
+
+**배경 (사용자 결정):** pilab 에서 depth GRU 와 proprio-GRU blind 를 각 3000 iteration 학습 중(중단하지 않음).
+현재 blind 는 proprio 를 50 Hz GRU 에 넣지만 depth 정책은 proprio 를 MLP 에 직접 넣고 GRU 에는 depth 특징만 넣는다.
+→ 두 런의 차이에 "depth 유무"와 "proprio 기억 유무"가 섞인다. BlindGRU 결과는 **proprio 기억이 있는 강한 대조군**으로 보관.
+
+**추가:** `Unitree-Go2-JepaLoco-BlindMLP` — depth 정책의 MLP head(512-256-128)에서 입력 z_t 만 뺀 [proprio 45] → 12.
+env 는 BlindGRU 와 같은 카메라 없는 `JepaBlindEnvCfg`, PPO·critic·rollout(100)은 depth 와 동일. 기존 BlindGRU 는 변경 없음.
+CLAUDE.md §6 대조군 설명 갱신.
+
+**검사·수정:**
+- 명령 스케줄 `steps_per_iteration` ≠ PPO `num_steps_per_env` 이면 `LatentLoggingPPO.construct_algorithm` 에서 ValueError.
+  스모크: `agent.num_steps_per_env=24` override → 첫 iteration 전에 오류 확인.
+- `--resume` 시 `common_step_counter` 가 0 으로 돌아가 명령 스케줄이 ±0.1 부터 재시작하던 문제:
+  `train.py` 가 load 후 `common_step_counter = checkpoint iteration × num_steps_per_env` 로 복원하고 전 env 명령을 재샘플.
+  IsaacLab 0.54.4 `command_manager.reset(None)` 은 slice 에 len() 을 호출해 실패하므로 env id 를 명시.
+  스모크: model_2.pt 에서 resume → `common_step_counter = 200 (iteration 2)`, iteration 2→3 정상 진행.
+  **이 수정 이전 코드(현재 pilab 학습 프로세스 포함)로는 resume 하지 않는다.**
+
+**테스트 재현 명령 (Z790, env_test):**
+- 전체 32개 (Isaac 앱 필요): `python scripts/jepa_loco/run_tests_in_app.py --headless` → `32 passed`, `PYTEST_EXIT_CODE=0`
+- 앞선 기록의 "27개 통과" 재현 (신규 2파일 제외):
+  `python scripts/jepa_loco/run_tests_in_app.py --headless --ignore=$PWD/source/unitree_rl_lab/unitree_rl_lab/jepa_loco/tests/test_checks_blind_mlp.py --ignore=$PWD/source/unitree_rl_lab/unitree_rl_lab/jepa_loco/tests/test_blind_mlp_cfg.py` → `27 passed`
+- 앱 없이 `python -m pytest` 로는 `test_baseline_v2.py`, `test_blind_mlp_cfg.py` 가 isaaclab(pxr) import 로 수집 실패한다. 나머지 25개는 앱 없이 통과.
+
+**스모크 (Z790, 64 env):** BlindMLP 3 iteration 정상 완주. actor 입력 45 → 512-256-128 → 12, `reward_min/termination` −4.0.

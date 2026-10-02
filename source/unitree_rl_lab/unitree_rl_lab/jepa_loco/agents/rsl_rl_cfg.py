@@ -66,3 +66,22 @@ class BlindGRUPPORunnerCfg(DepthGRUPPORunnerCfg):
         obs_normalization=True,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
     )
+
+
+@configclass
+class BlindMLPPPORunnerCfg(DepthGRUPPORunnerCfg):
+    """기억 없는 proprio-only 대조군: depth 정책의 MLP head 와 같은 구조에 depth 경로(CNN+GRU)만 뺀다.
+
+    depth 정책: [proprio 45, z_t 128] → MLP 512-256-128 → 12
+    이 정책 : [proprio 45]           → MLP 512-256-128 → 12
+    rollout 길이·PPO·critic 은 depth 와 동일. 비순환이라 rsl_rl 기본 미니배치를 쓴다.
+    """
+
+    experiment_name = "jepa_loco_blind_mlp"
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )

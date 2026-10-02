@@ -16,6 +16,8 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.storage import RolloutStorage
 from tensordict import TensorDict
 
+from .checks import check_command_schedule
+
 
 class ResetMaskRolloutStorage(RolloutStorage):
     """trajectory 패딩 없이 env 별 rollout 시퀀스 [T, B] 를 그대로 미니배치로 준다.
@@ -68,6 +70,13 @@ class ResetMaskRolloutStorage(RolloutStorage):
 
 class LatentLoggingPPO(PPO):
     collapse_warn_std: float = 1e-3
+
+    @staticmethod
+    def construct_algorithm(obs: TensorDict, env, cfg: dict, device: str) -> PPO:
+        """시작 시 명령 스케줄과 rollout 길이 일치를 검사한 뒤 rsl_rl 기본 구성."""
+        commands = getattr(getattr(getattr(env, "unwrapped", env), "cfg", None), "commands", None)
+        check_command_schedule(getattr(commands, "base_velocity", None), cfg["num_steps_per_env"])
+        return PPO.construct_algorithm(obs, env, cfg, device)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

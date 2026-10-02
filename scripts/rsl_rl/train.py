@@ -196,6 +196,17 @@ def main(
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+        if agent_cfg.resume:
+            # iteration 기반 스케줄(jepa_loco 명령 범위 등)이 0 부터 다시 시작하지 않도록 전역 스텝 복원
+            from unitree_rl_lab.jepa_loco.agents.checks import restore_global_step
+
+            step = restore_global_step(env.unwrapped, runner.current_learning_iteration, agent_cfg.num_steps_per_env)
+            print(f"[INFO] resume: common_step_counter = {step} (iteration {runner.current_learning_iteration})", flush=True)
+            # env 는 load 전에 counter 0 으로 reset 되어 명령이 초기 범위로 뽑혀 있다 → 복원된 스텝으로 재샘플
+            # (IsaacLab 0.54.4 의 reset(None) 은 slice 에 len() 을 호출해 실패 → env id 를 명시)
+            if hasattr(env.unwrapped, "command_manager"):
+                all_ids = torch.arange(env.unwrapped.num_envs, device=env.unwrapped.device)
+                env.unwrapped.command_manager.reset(all_ids)
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
