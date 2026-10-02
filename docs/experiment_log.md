@@ -121,7 +121,10 @@ depth와 카메라가 없는 proprio-only GRU 대조군을 같은 보상·명령
 **구현:** `ScheduledVelocityCommand`는 전역 제어 스텝으로 명령 범위를 계산하고 재샘플 직전에 적용한다.
 `JepaDiagnosticEnv`가 항목별 스텝 보상 극값을 PPO로 보내며, `LatentLoggingPPO`가 iteration 내 극값을 축적한다.
 blind task는 depth 카메라·depth 관측을 만들지 않고 proprio GRU를 제어 주기마다 갱신한다.
-단위 테스트 27개 통과(신규 5개 포함), Python compileall 통과. 현재 작업 샌드박스에서 Isaac Sim이 CUDA 장치를
-찾지 못해 환경 생성 스모크와 본 학습은 미실행. Z790 또는 pilab에서 카메라 없는 blind env 생성 여부와
-두 task의 짧은 학습 스모크를 확인한 뒤 3000 iteration을 실행해야 한다.
+단위 테스트 27개 통과(신규 5개 포함), Python compileall 통과. 일반 작업 샌드박스에서는 GPU가 보이지
+않았으나, 승인된 GPU 접근으로 Z790의 RTX 5070 Ti와 `env_test`를 사용해 두 task를 각각 8 env·1 iteration
+스모크 실행했다. 둘 다 정상 종료했다. 저장된 env 설정에서 blind는 `d435i: null`, `depth: null`,
+`depth_fresh: null`이며 depth task에는 카메라와 depth 관측이 존재한다. TensorBoard에 보상 항목별 극값과
+value 범위가 기록됐다. blind 스모크의 `reward_min/termination`은 −4.0으로 설정한 종료 페널티가 실제
+적용됨을 확인했다. 3000 iteration 본 학습은 pilab에서 실행 예정이다.
 학습 결과와 play 판정은 본 학습 후 추가 기록한다.
