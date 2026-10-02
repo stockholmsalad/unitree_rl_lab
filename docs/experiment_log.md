@@ -109,3 +109,19 @@ depth fp16 저장은 유지.
 - **원인 2 (후반 붕괴) — value 발산**: iter ~1400 부터 value loss 1e-2 → 1e3, 이어 action std 0.32 → 0.62,
   action_rate 페널티 3배, 추종 절반. value 발산의 근본 원인은 미확인(보상 이상치 −150 관찰).
 - latent z std 0.72 로 증가, 죽은 차원 0 — 표현 붕괴는 없음.
+
+## 2026-10-02 — Phase 2 재학습안 확정 및 구현
+
+**결정 (사용자):** 넘어짐 종료 보상 `is_terminated` weight −200 (dt 0.02 적용 시 −4, 시간 초과 제외),
+명령 범위는 세 축 ±0.1에서 시작해 전역 iteration 500까지 명세 범위로 선형 확장한다.
+성능 적응형 스케줄은 depth/blind 비교를 오염시키므로 사용하지 않는다. entropy 계수 0.01과 학습률은 유지.
+depth와 카메라가 없는 proprio-only GRU 대조군을 같은 보상·명령·지형·PPO 설정으로 각각 3000 iteration 학습한다.
+보상 항목별 스텝 최솟값·최댓값과 rollout 중 critic value 최솟값·최댓값을 TensorBoard에 기록해 −150 보상 스파이크를 진단한다.
+
+**구현:** `ScheduledVelocityCommand`는 전역 제어 스텝으로 명령 범위를 계산하고 재샘플 직전에 적용한다.
+`JepaDiagnosticEnv`가 항목별 스텝 보상 극값을 PPO로 보내며, `LatentLoggingPPO`가 iteration 내 극값을 축적한다.
+blind task는 depth 카메라·depth 관측을 만들지 않고 proprio GRU를 제어 주기마다 갱신한다.
+단위 테스트 27개 통과(신규 5개 포함), Python compileall 통과. 현재 작업 샌드박스에서 Isaac Sim이 CUDA 장치를
+찾지 못해 환경 생성 스모크와 본 학습은 미실행. Z790 또는 pilab에서 카메라 없는 blind env 생성 여부와
+두 task의 짧은 학습 스모크를 확인한 뒤 3000 iteration을 실행해야 한다.
+학습 결과와 play 판정은 본 학습 후 추가 기록한다.

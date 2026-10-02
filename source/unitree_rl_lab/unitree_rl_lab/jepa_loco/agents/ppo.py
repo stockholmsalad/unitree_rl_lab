@@ -72,9 +72,38 @@ class LatentLoggingPPO(PPO):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.storage.__class__ = ResetMaskRolloutStorage
+        self._reward_min: dict[str, torch.Tensor] = {}
+        self._reward_max: dict[str, torch.Tensor] = {}
+        self._value_min: torch.Tensor | None = None
+        self._value_max: torch.Tensor | None = None
+
+    def act(self, obs: TensorDict) -> torch.Tensor:
+        actions = super().act(obs)
+        values = self.transition.values
+        lo, hi = values.amin(), values.amax()
+        self._value_min = lo if self._value_min is None else torch.minimum(self._value_min, lo)
+        self._value_max = hi if self._value_max is None else torch.maximum(self._value_max, hi)
+        return actions
+
+    def process_env_step(self, obs, rewards, dones, extras):
+        for source, target, op in (("reward_step_min", self._reward_min, torch.minimum),
+                                   ("reward_step_max", self._reward_max, torch.maximum)):
+            for name, value in extras.get(source, {}).items():
+                target[name] = value if name not in target else op(target[name], value)
+        super().process_env_step(obs, rewards, dones, extras)
 
     def update(self) -> dict[str, float]:
         loss = super().update()
+        if self._value_min is not None:
+            loss["diagnostic/value_min"] = self._value_min.item()
+            loss["diagnostic/value_max"] = self._value_max.item()
+        for name, value in self._reward_min.items():
+            loss[f"diagnostic/reward_min/{name}"] = value.item()
+        for name, value in self._reward_max.items():
+            loss[f"diagnostic/reward_max/{name}"] = value.item()
+        self._reward_min.clear()
+        self._reward_max.clear()
+        self._value_min = self._value_max = None
         z = getattr(self.actor, "last_z", None)
         if z is not None and z.shape[0] > 1:
             std = z.float().std(dim=0)
