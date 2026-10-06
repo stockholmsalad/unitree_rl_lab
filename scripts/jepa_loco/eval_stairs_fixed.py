@@ -118,6 +118,25 @@ def main():
     runner.load(str(Path(args.checkpoint).resolve()))
     policy = runner.get_inference_policy(device=env.unwrapped.device)
     obs = env.get_observations()
+    initial_terrain_scan = {}
+    for group_name in ("terrain_current", "terrain_wide", "terrain_future"):
+        if group_name in obs:
+            values = obs[group_name].float()
+            initial_terrain_scan[group_name] = {
+                "min": values.min().item(), "max": values.max().item(),
+                "mean": values.mean().item(), "std": values.std(unbiased=False).item(),
+                "fraction_at_clip_max": (values == 1.0).float().mean().item(),
+            }
+    initial_scan_geometry = {}
+    if "height_scanner" in env.unwrapped.scene.sensors:
+        sensor = env.unwrapped.scene.sensors["height_scanner"]
+        initial_scan_geometry = {
+            "sensor_z": sensor.data.pos_w[:, 2].detach().cpu().tolist(),
+            "ray_hit_z_min": sensor.data.ray_hits_w[..., 2].amin(dim=1).detach().cpu().tolist(),
+            "ray_hit_z_max": sensor.data.ray_hits_w[..., 2].amax(dim=1).detach().cpu().tolist(),
+            "robot_base_z": env.unwrapped.scene["robot"].data.root_pos_w[:, 2].detach().cpu().tolist(),
+            "terrain_origin_z": env.unwrapped.scene.env_origins[:, 2].detach().cpu().tolist(),
+        }
     robot = env.unwrapped.scene["robot"]
     foot_ids, foot_names = robot.find_bodies(".*_foot")
     front_foot_ids = [body_id for body_id, name in zip(foot_ids, foot_names) if name.startswith("F")]
@@ -175,6 +194,7 @@ def main():
             active = still_active
             if (step % cfg.trace_interval_steps == 0 or step == cfg.episode_steps - 1) and active.any():
                 reward_terms = env.unwrapped.reward_manager
+                terrain_scan = obs["terrain_current"][active] if "terrain_current" in obs else None
                 trace.append({"step": step + 1,
                               "forward_m_mean": forward[active].mean().item(),
                               "forward_m_min": forward[active].min().item(),
@@ -185,11 +205,15 @@ def main():
                               "front_foot_x_m_mean": front_x[active].mean().item(),
                               "action_abs_mean": actions[active].abs().mean().item(),
                               "reward_per_step_mean": rewards[active].mean().item(),
+                              "terrain_scan_min": None if terrain_scan is None else terrain_scan.min().item(),
+                              "terrain_scan_max": None if terrain_scan is None else terrain_scan.max().item(),
+                              "terrain_scan_std": None if terrain_scan is None else terrain_scan.float().std(unbiased=False).item(),
                               "reward_terms_per_s": {name: reward_terms._step_reward[active, i].mean().item()
                                                      for i, name in enumerate(reward_terms._term_names)},
                               "active_rate": active.float().mean().item()})
 
     report = {"task": args.task, "terrain": args.terrain, "checkpoint": str(Path(args.checkpoint).resolve()),
+              "initial_terrain_scan": initial_terrain_scan, "initial_scan_geometry": initial_scan_geometry,
               "command_mps": cfg.forward_command_mps, "observed_command": command_sample,
               "spawn_forward_m": cfg.spawn_forward_m, "episode_steps": cfg.episode_steps,
               "stair_count": count, "first_riser_m": first_riser, "top_edge_m": top_edge, "success_rule":
