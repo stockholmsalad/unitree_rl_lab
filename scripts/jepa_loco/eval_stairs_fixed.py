@@ -22,8 +22,14 @@ parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--output", required=True)
 parser.add_argument("--terrain", choices=("stairs", "flat"), default="stairs")
 parser.add_argument("--spawn_forward_m", type=float, default=None)
+parser.add_argument("--episode_steps", type=int, default=None)
+parser.add_argument("--envs_per_height", type=int, default=None)
+parser.add_argument("--seed", type=int, default=None)
+parser.add_argument("--video", action="store_true", help="고정 지형 평가 env 0의 영상을 저장한다.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+if args.video:
+    args.enable_cameras = True
 simulation_app = AppLauncher(args).app
 
 import json  # noqa: E402
@@ -46,6 +52,12 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
                             entry_point_key="play_env_cfg_entry_point")
     env_cfg.seed = cfg.seed
     env_cfg.episode_length_s = cfg.episode_steps * env_cfg.sim.dt * env_cfg.decimation
+    # 고정 평가에서는 학습용 승급·강등을 적용하지 않는다.
+    env_cfg.curriculum.terrain_levels = None
+    env_cfg.viewer.origin_type = "env"
+    env_cfg.viewer.env_index = cfg.viewer_env_index
+    env_cfg.viewer.eye = cfg.viewer_eye
+    env_cfg.viewer.lookat = cfg.viewer_lookat
 
     generator = env_cfg.scene.terrain.terrain_generator.copy()
     generator.num_rows = 1
@@ -82,13 +94,25 @@ def main():
     cfg = StairEvalCfg()
     if args.spawn_forward_m is not None:
         cfg.spawn_forward_m = args.spawn_forward_m
+    if args.episode_steps is not None:
+        cfg.episode_steps = args.episode_steps
+    if args.envs_per_height is not None:
+        cfg.envs_per_height = args.envs_per_height
+    if args.seed is not None:
+        cfg.seed = args.seed
     env_cfg = make_eval_env_cfg(args.task, cfg)
     agent_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
     import importlib.metadata as metadata
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
     agent_cfg.seed = cfg.seed
 
-    env = gym.make(args.task, cfg=env_cfg)
+    env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if args.video else None)
+    if args.video:
+        env = gym.wrappers.RecordVideo(
+            env, video_folder=str(Path(args.output).with_suffix("")) + "_video",
+            step_trigger=lambda step: step == 0, video_length=cfg.episode_steps,
+            disable_logger=True,
+        )
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     runner.load(str(Path(args.checkpoint).resolve()))

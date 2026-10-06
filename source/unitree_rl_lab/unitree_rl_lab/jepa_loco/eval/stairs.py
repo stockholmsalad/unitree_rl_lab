@@ -21,6 +21,9 @@ class StairEvalCfg:
     seed: int = 42
     trace_interval_steps: int = 100
     settle_steps: int = 50
+    viewer_eye: tuple[float, float, float] = (-2.0, 2.5, 1.2)
+    viewer_lookat: tuple[float, float, float] = (1.2, 0.0, 0.3)
+    viewer_env_index: int = 0
 
 
 def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_width: float,
