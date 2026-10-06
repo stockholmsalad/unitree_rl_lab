@@ -275,7 +275,7 @@ RayCaster heightmap에서 읽는다. Current/Future는 동일한 187→128→32 
 future sample mask, 유효 표본 수로 나누는 latent MSE를 구현했다. 아직 이 함수들을 학습에
 연결한 student/JEPA는 없다. `eval_stairs_fixed.py`가 세 oracle task를 허용하도록 확장했다.
 
-Isaac 앱 내부 테스트 **44개 통과**. Z790 RTX 5070 Ti에서 각 oracle task 8 env·1 iteration
+Isaac 앱 내부 테스트 **45개 통과**(회전된 미래 heightmap 기하 테스트 포함). Z790 RTX 5070 Ti에서 각 oracle task 8 env·1 iteration
 PPO 스모크가 종료 코드 0으로 완주했다. 이것은 관측 생성과 최적화 연결만 확인한 것이며,
 계단 등반 성능은 아직 검증되지 않았다. 설계 명세 §4–7과 충돌하는 단일 명령 predictor,
 JEPA MSE, teacher-first 단계, 고정 terrain schedule은 사용자 결정 후 명세를 개정해야 한다.
