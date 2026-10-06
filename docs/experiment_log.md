@@ -403,3 +403,11 @@ yaw rate ∈ [−1.0, 1.0] rad/s로 갱신했다. 초기 ±0.1 및 500 iteration
 첫 구현의 계단 게이트가 전체 계단 바깥을 요구하는 것을 확인해, 사용자 결정 A에 맞게
 **첫 단 너머**로 바로잡았다. 수정 후 순수 함수 8개와 `oracle_first_step_smoke`
 (8 env·1 iteration)를 다시 통과했다. 최종 코드로 Isaac 앱 내부 전체 54개도 재통과했다.
+
+**Z790 본 학습 시작 (00:09, 사용자 승인):** tmux 세션
+`oracle_current_clearance_s43`에서 OracleCurrent 2048 env·3000 iteration·seed 43을
+새로 시작했다. 로그 디렉터리는
+`logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_00-09-25_oracle_current_clearance_s43`.
+첫 iteration은 15,930 steps/s, 12.86 s/iter, ETA 약 10시간 43분이다.
+기존 체크포인트에서 resume하지 않았다. 첫 iteration 보상·지형 레벨은 초기 정책
+상태이므로 성능 판단에 사용하지 않는다. 종료 후 고정 9 cm 평가와 play 영상을 확인한다.
