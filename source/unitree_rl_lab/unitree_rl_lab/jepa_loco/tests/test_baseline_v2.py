@@ -13,13 +13,13 @@ from unitree_rl_lab.jepa_loco.models.proprio_actor import ProprioRecurrentActor
 
 def test_command_schedule_endpoints_and_midpoint():
     start = ((-0.1, 0.1),) * 3
-    end = ((-0.3, 1.0), (-0.4, 0.4), (-0.8, 0.8))
+    end = ((-0.3, 2.0), (-0.4, 0.4), (-1.0, 1.0))
     assert scheduled_ranges(start, end, 0, 50000) == start
     assert scheduled_ranges(start, end, 50000, 50000) == end
     assert scheduled_ranges(start, end, 60000, 50000) == end
     mid = scheduled_ranges(start, end, 25000, 50000)
-    assert mid[0] == pytest.approx((-0.2, 0.55))
-    assert mid[2] == pytest.approx((-0.45, 0.45))
+    assert mid[0] == pytest.approx((-0.2, 1.05))
+    assert mid[2] == pytest.approx((-0.55, 0.55))
     with pytest.raises(ValueError):
         scheduled_ranges(start, end, 0, 0)
 

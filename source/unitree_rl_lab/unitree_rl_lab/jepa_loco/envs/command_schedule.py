@@ -34,7 +34,7 @@ class ScheduledVelocityCommandCfg(UniformVelocityCommandCfg):
         lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
     )
     final_ranges: UniformVelocityCommandCfg.Ranges = UniformVelocityCommandCfg.Ranges(
-        lin_vel_x=(-0.3, 1.0), lin_vel_y=(-0.4, 0.4), ang_vel_z=(-0.8, 0.8)
+        lin_vel_x=(-0.3, 2.0), lin_vel_y=(-0.4, 0.4), ang_vel_z=(-1.0, 1.0)
     )
     ramp_iterations: int = 500
     steps_per_iteration: int = 100
