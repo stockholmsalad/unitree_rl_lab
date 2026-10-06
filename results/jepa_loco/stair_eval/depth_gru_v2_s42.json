@@ -1,0 +1,43 @@
+{
+  "task": "Unitree-Go2-JepaLoco-DepthGRU",
+  "checkpoint": "/home/user/graduation/unitree_rl_lab/logs/rsl_rl/jepa_loco_depth_gru/2026-10-02_10-42-41_gru_depth_v2_s42_tmux/model_2999.pt",
+  "command_mps": 0.6,
+  "observed_command": [
+    0.6000000238418579,
+    0.0,
+    0.0
+  ],
+  "spawn_forward_m": 1.0,
+  "episode_steps": 1000,
+  "stair_count": 6,
+  "top_edge_m": 3.0,
+  "success_rule": "body gain >= 0.9 * 6 * step height and forward x >= 2.90 m for 25 steps",
+  "groups": {
+    "low": {
+      "step_height_m": 0.09,
+      "n": 16,
+      "success_rate": 0.0,
+      "non_timeout_rate": 0.0,
+      "timeout_rate": 1.0,
+      "max_body_rise_steps_mean": 0.0,
+      "max_body_rise_steps_median": 0.0,
+      "max_body_rise_steps_max": 0.0,
+      "max_forward_m_mean": 1.0282235145568848,
+      "max_forward_m_max": 1.0526686906814575,
+      "min_body_drop_steps_mean": -0.920866847038269
+    },
+    "high": {
+      "step_height_m": 0.19,
+      "n": 16,
+      "success_rate": 0.0,
+      "non_timeout_rate": 0.0,
+      "timeout_rate": 1.0,
+      "max_body_rise_steps_mean": 0.0,
+      "max_body_rise_steps_median": 0.0,
+      "max_body_rise_steps_max": 0.0,
+      "max_forward_m_mean": 1.0656931400299072,
+      "max_forward_m_max": 1.0858627557754517,
+      "min_body_drop_steps_mean": -0.47423917055130005
+    }
+  }
+}
