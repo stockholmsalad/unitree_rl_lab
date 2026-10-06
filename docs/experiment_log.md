@@ -304,7 +304,8 @@ TerrainGenerator seed를 환경 seed로 명시하여 같은 seed의 세 조건�
 
 **검증:** Isaac 앱 내부 테스트 **52개 통과**. Current oracle 8 env·1 iteration 스모크
 완주. 해당 스모크에서 평균 누적 경로 길이 0.4063 m, 종류별 terrain level 5개가
-로그에 기록됐다. 고정 계단 평가에서는 curriculum을 꺼서 동일 지형을 유지하고,
+로그에 기록됐다. Wide와 Current+Future도 각각 8 env·1 iteration 스모크 완주했고
+경로 길이 및 종류별 terrain level 5개가 모두 기록됐다. 고정 계단 평가에서는 curriculum을 꺼서 동일 지형을 유지하고,
 선택적으로 env 0 영상을 저장할 수 있게 했다. 아직 장시간 학습이나 등반 판정은 하지 않았다.
 스모크 체크포인트(`model_0.pt`)로 2 env·100스텝 고정 계단 평가를 실행해 JSON과 MP4 저장을
 확인했다. 영상 1초 프레임에서 로봇과 계단이 함께 보인다. 이 checkpoint는 학습 전이므로
