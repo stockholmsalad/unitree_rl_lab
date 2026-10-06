@@ -260,3 +260,23 @@ depth 9 cm 정지 상태(901스텝)의 보상은 스텝당 평균 +0.0195다.
 진단 원시 결과: `results/jepa_loco/stair_eval/depth_gru_v2_s42_flat_diag.json`,
 `results/jepa_loco/stair_eval/depth_gru_v2_s42_center_diag.json`,
 `results/jepa_loco/stair_eval/blind_gru_v2_s42_center_diag.json`.
+
+## 2026-10-06 — Privileged oracle 경로 구현 및 짧은 검증 (Z790)
+
+계단 첫 단을 오르지 못하는 GRU 기준선 결과를 바탕으로, 제안된 새 연구 구조의 선행 조건인
+`Current`, `Wide`, `Current+Future` heightmap oracle PPO task를 구현했다. 세 task 모두
+카메라 없이 기존 proprio·보상·명령·지형·critic을 공유한다. `Current+Future`는 현재
+명령을 0.5초 동안 SE(2) 적분한 예상 pose 중심의 future patch를 현재 위치의 wide
+RayCaster heightmap에서 읽는다. Current/Future는 동일한 187→128→32 terrain encoder를
+공유하며, Wide는 1271→128→64로 policy에 들어가는 총 terrain latent 64차원을 맞춘다.
+스캐너 범위, 예측 horizon, latent 차원은 configclass에 노출했다.
+
+별도 순수 함수로 command pose 외삽, 실제 미래 pose·명령 변화·에피소드·가시성을 확인하는
+future sample mask, 유효 표본 수로 나누는 latent MSE를 구현했다. 아직 이 함수들을 학습에
+연결한 student/JEPA는 없다. `eval_stairs_fixed.py`가 세 oracle task를 허용하도록 확장했다.
+
+Isaac 앱 내부 테스트 **44개 통과**. Z790 RTX 5070 Ti에서 각 oracle task 8 env·1 iteration
+PPO 스모크가 종료 코드 0으로 완주했다. 이것은 관측 생성과 최적화 연결만 확인한 것이며,
+계단 등반 성능은 아직 검증되지 않았다. 설계 명세 §4–7과 충돌하는 단일 명령 predictor,
+JEPA MSE, teacher-first 단계, 고정 terrain schedule은 사용자 결정 후 명세를 개정해야 한다.
+현재 oracle 코드는 검증용 구현으로 두고 1시간 이상 본 학습은 실행하지 않았다.
