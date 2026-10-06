@@ -310,3 +310,17 @@ TerrainGenerator seed를 환경 seed로 명시하여 같은 seed의 세 조건�
 스모크 체크포인트(`model_0.pt`)로 2 env·100스텝 고정 계단 평가를 실행해 JSON과 MP4 저장을
 확인했다. 영상 1초 프레임에서 로봇과 계단이 함께 보인다. 이 checkpoint는 학습 전이므로
 해당 평가 수치는 정책 성능으로 해석하지 않는다.
+
+## 2026-10-06 — OracleCurrent 본 학습 (경로 길이 커리큘럼), seed 42 (pilab) · seed 43 (Z790)
+
+처리량: Z790 2048 env 11.5–11.9 s/iter(약 17,500 steps/s, 안정). pilab은 다른 사용자 작업과 GPU 경합으로 8–75 s/iter 변동.
+
+**seed 43 (Z790) 중간 결과 — iter 약 900 (2:41 경과):** terrain level stairs_up **5.52**(단 약 15 cm),
+stairs_down 4.67, gap 5.60, rough 6.01, flat 6.12. bad_orientation 2.9%, 에피소드 길이 981.
+1:04 경과 시점(stairs_up 0.70, stairs_down 0.17)에서 크게 상승 — v2(전체 평균 레벨 약 1에서 정체)와 달리 계단 커리큘럼이 진행된다.
+커리큘럼상 진행일 뿐이며 고정 9 cm 평가·play 영상 판정 전에는 등반 통과로 보지 않는다.
+
+**중단·재개:** iter 901에서 사용자가 실수로 Ctrl+C. `model_900.pt` 에서 `--resume` (2100 iter 추가, 같은 run_name·seed).
+`[INFO] resume: common_step_counter = 90000 (iteration 900)` 확인 — 명령 스케줄 복원 정상.
+**지형 레벨은 env 상태라 checkpoint 에 없어 0 부터 다시 시작**(재개 직후 stairs_up 0.02) → 레벨 곡선에 재개 구간 하락이 생긴다.
+분석 시 원 런(`2026-10-06_14-32-11_oracle_current_path_s43`)과 재개 런을 이어 붙이고 재개 지점을 표시한다.
