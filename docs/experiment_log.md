@@ -324,3 +324,31 @@ stairs_down 4.67, gap 5.60, rough 6.01, flat 6.12. bad_orientation 2.9%, 에피�
 `[INFO] resume: common_step_counter = 90000 (iteration 900)` 확인 — 명령 스케줄 복원 정상.
 **지형 레벨은 env 상태라 checkpoint 에 없어 0 부터 다시 시작**(재개 직후 stairs_up 0.02) → 레벨 곡선에 재개 구간 하락이 생긴다.
 분석 시 원 런(`2026-10-06_14-32-11_oracle_current_path_s43`)과 재개 런을 이어 붙이고 재개 지점을 표시한다.
+
+**seed 43 완료 및 고정 계단 평가 (Z790, 2026-10-06 23:32):** 재개 런이
+`model_2999.pt`까지 완료됐다. 마지막 200 iteration 평균은 stairs_up terrain level
+5.55, stairs_down 5.62, rough 5.80, gap 5.70, 에피소드 길이 992/1000,
+time_out 97.9%, value loss 0.014. 재개 시 레벨 초기화가 있었으므로 연속 3000 iteration
+학습과 동일한 지형 노출 이력으로 해석하지 않는다.
+
+`eval_stairs_fixed.py`로 중심 x=0 m에서 시작하는 고정 0.6 m/s 직진 명령,
+seed 43, 높이별 16 env, 1000 제어 스텝 평가와 env 0 영상 기록을 수행했다.
+첫 단은 x=1.2 m, 단 높이는 각각 9 cm·19 cm다.
+
+| 고정 평가 | 9 cm 오르는 계단 | 19 cm 오르는 계단 |
+|---|---:|---:|
+| 상단 도달 | 0/16 | 0/16 |
+| 몸체 최대 x 평균 | 1.04 m | 0.97 m |
+| 안정화 50스텝 이후 앞발 중심 최고 높이 평균 | 4.6 cm | 4.3 cm |
+| 안정화 이후 앞발 중심 최고 높이 환경 최대 | 5.1 cm | 4.7 cm |
+| 비시간초과 종료 | 0/16 | 0/16 |
+
+영상 2초·8초 프레임에서 env 0 로봇이 첫 단 앞에 서 있으며, 발을 단 위로 올리지 못한 채
+정지한다. 수치상 몸체 x≈1.04 m, 앞발 x≈1.18 m로 첫 단 x=1.2 m 앞에서 멈춘 것과 일치한다.
+**OracleCurrent는 고정 9 cm 통과 조건에 실패했다.** 따라서 사용자 결정에 따라
+Wide·Current+Future 본 학습은 시작하지 않는다. 높은 학습 중 terrain level은 고정
+계단 통과의 증거가 아니다. 경로 길이 판정은 yaw-rate 원 운동에도 승급을 허용하므로,
+계단을 실제로 넘지 않고 승급했을 가능성이 있다. 이 가능성은 학습 궤적이 없어 확정할 수 없다.
+
+원시 결과: `results/jepa_loco/stair_eval/oracle_current_path_s43_fixed_stairs.json`,
+영상: `results/jepa_loco/stair_eval/oracle_current_path_s43_fixed_stairs_video/rl-video-step-0.mp4`.
