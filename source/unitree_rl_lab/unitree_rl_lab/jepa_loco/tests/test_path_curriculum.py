@@ -5,6 +5,8 @@ import torch
 from types import SimpleNamespace
 
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import (
+    obstacle_clearance_step,
+    obstacle_outer_edges,
     path_length_decisions,
     terrain_column_type_ids,
     terrain_level_means_by_type,
@@ -39,6 +41,37 @@ def test_up_wins_when_both_thresholds_match():
         path_length_decisions(torch.zeros(2, 1), torch.zeros(2, 2), 8.0, 20.0, 0.5, 0.5)
 
 
+def test_obstacle_gate_blocks_path_only_promotion():
+    up, down = path_length_decisions(
+        torch.tensor([5.0, 5.0]), torch.tensor([[0.2, 0.0], [0.2, 0.0]]),
+        8.0, 20.0, 0.5, 0.5, torch.tensor([False, True]),
+    )
+    assert up.tolist() == [False, True]
+    assert down.tolist() == [False, False]
+
+
+def test_obstacle_clearance_needs_sustained_outer_ground():
+    sub_terrains = {
+        "flat": SimpleNamespace(),
+        "stairs_up": SimpleNamespace(border_width=1.0),
+        "stairs_down": SimpleNamespace(border_width=1.0),
+        "gap": SimpleNamespace(platform_width=3.0, gap_width_range=(0.1, 0.3)),
+    }
+    assert obstacle_outer_edges(sub_terrains, (8.0, 8.0), 0.1).tolist() == pytest.approx([0.0, 3.1, 3.1, 1.9])
+    root = torch.tensor([[0.0, 0.0], [3.2, 0.0], [0.0, 3.2], [2.0, 0.0]])
+    edge = obstacle_outer_edges(sub_terrains, (8.0, 8.0), 0.1)
+    consecutive = torch.zeros(4, dtype=torch.long)
+    cleared = torch.zeros(4, dtype=torch.bool)
+    for _ in range(2):
+        consecutive, cleared = obstacle_clearance_step(root, torch.zeros_like(root), edge, consecutive, cleared, 3)
+    assert cleared.tolist() == [True, False, False, False]
+    consecutive, cleared = obstacle_clearance_step(root, torch.zeros_like(root), edge, consecutive, cleared, 3)
+    assert cleared.tolist() == [True, True, True, True]
+    root[1] = 0
+    consecutive, cleared = obstacle_clearance_step(root, torch.zeros_like(root), edge, consecutive, cleared, 3)
+    assert cleared[1].item()
+
+
 def test_curriculum_term_passes_path_decisions_to_terrain():
     captured = {}
     terrain = SimpleNamespace(
@@ -50,6 +83,7 @@ def test_curriculum_term_passes_path_decisions_to_terrain():
         scene=SimpleNamespace(terrain=terrain),
         command_manager=SimpleNamespace(get_command=lambda _: torch.tensor([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]])),
         episode_path_length_m=torch.tensor([4.1, 0.2]),
+        episode_obstacle_cleared=torch.tensor([True, False]),
         max_episode_length_s=20.0,
     )
     ids = torch.tensor([0, 1])

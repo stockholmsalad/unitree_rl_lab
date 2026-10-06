@@ -28,6 +28,17 @@ class OraclePathCurriculumCfg:
 
 
 @configclass
+class OracleProgressCfg:
+    clearance_margin_m: float = 0.1
+    clearance_hold_steps: int = 10
+    stair_approach_margin_m: float = 0.25
+    first_step_progress_margin_m: float = 0.05
+    stall_speed_mps: float = 0.1
+    stall_hold_steps: int = 50
+    forward_attempt_speed_mps: float = 0.2
+
+
+@configclass
 class OracleObservationsCfg(BlindObservationsCfg):
     @configclass
     class TerrainCurrentCfg(ObsGroup):
@@ -46,6 +57,7 @@ class OracleCurrentEnvCfg(JepaBlindEnvCfg):
     scene: BlindSceneCfg = BlindSceneCfg(num_envs=1024, env_spacing=2.5)
     observations: OracleObservationsCfg = OracleObservationsCfg()
     curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
+    progress: OracleProgressCfg = OracleProgressCfg()
     terrain_column_assignment_eps: float = 0.001
 
 
@@ -54,6 +66,7 @@ class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
     scene: BlindSceneCfg = BlindSceneCfg(num_envs=32, env_spacing=2.5)
     observations: OracleObservationsCfg = OracleObservationsCfg()
     curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
+    progress: OracleProgressCfg = OracleProgressCfg()
     terrain_column_assignment_eps: float = 0.001
 
 

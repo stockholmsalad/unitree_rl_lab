@@ -54,6 +54,9 @@ def test_three_oracles_use_identical_curriculum_rewards_and_commands():
         assert cfg.scene.terrain.terrain_generator.to_dict() == current.scene.terrain.terrain_generator.to_dict()
         assert cfg.commands.base_velocity.to_dict() == current.commands.base_velocity.to_dict()
         assert cfg.rewards.to_dict() == current.rewards.to_dict()
+        assert cfg.progress.to_dict() == current.progress.to_dict()
+        assert cfg.commands.base_velocity.final_ranges.lin_vel_x == (-0.3, 2.0)
+        assert cfg.commands.base_velocity.final_ranges.ang_vel_z == (-1.0, 1.0)
     runners = (OracleCurrentPPORunnerCfg(), OracleWidePPORunnerCfg(), OracleCurrentFuturePPORunnerCfg())
     for runner in runners[1:]:
         assert runner.num_steps_per_env == runners[0].num_steps_per_env
