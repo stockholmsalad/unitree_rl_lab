@@ -411,3 +411,17 @@ yaw rate ∈ [−1.0, 1.0] rad/s로 갱신했다. 초기 ±0.1 및 500 iteration
 첫 iteration은 15,930 steps/s, 12.86 s/iter, ETA 약 10시간 43분이다.
 기존 체크포인트에서 resume하지 않았다. 첫 iteration 보상·지형 레벨은 초기 정책
 상태이므로 성능 판단에 사용하지 않는다. 종료 후 고정 9 cm 평가와 play 영상을 확인한다.
+
+**pilab 구버전 OracleCurrent seed 42 결과 반입·고정 평가 (08:59):**
+`2026-10-06_13-06-27_oracle_current_path_s42/model_2999.pt`가 반입됐다.
+이 런의 최종 명령 범위는 vx 최대 1.0 m/s·yaw 최대 0.8 rad/s이고,
+경로 길이만으로 승급하는 구버전이다. 마지막 200 iteration의
+`stairs_up` 평균 레벨은 5.56, 시간초과율은 97.8%였다.
+seed 42, 중심 출발, 고정 0.6 m/s 직진 명령, 높이별 16 env·1000스텝
+평가에서 9 cm와 19 cm 모두 **0/16 성공**했다. 9 cm의 몸체 최대 x 평균은
+1.03 m(첫 단 x=1.2 m), 안정화 후 앞발 중심 최고 높이 평균은 3.8 cm였다.
+2초·8초 영상에서도 로봇이 첫 단 앞에 머문다.
+결과: `results/jepa_loco/stair_eval/oracle_current_path_s42_fixed_stairs.json`,
+영상: `results/jepa_loco/stair_eval/oracle_current_path_s42_fixed_stairs_video/rl-video-step-0.mp4`.
+구버전 seed 43 결과와 같은 실패 형태다. 새 Z790 게이트 런과는 명령·승급
+설정이 달라 학습 곡선 수치를 직접 비교하지 않는다.
