@@ -14,6 +14,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", choices=("Unitree-Go2-JepaLoco-DepthGRU", "Unitree-Go2-JepaLoco-BlindGRU"), required=True)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--output", required=True)
+parser.add_argument("--terrain", choices=("stairs", "flat"), default="stairs")
+parser.add_argument("--spawn_forward_m", type=float, default=None)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 simulation_app = AppLauncher(args).app
@@ -23,6 +25,7 @@ from pathlib import Path  # noqa: E402
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
+import isaaclab.terrains as terrain_gen  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 import unitree_rl_lab.tasks  # noqa: E402, F401
@@ -39,14 +42,17 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
     env_cfg.episode_length_s = cfg.episode_steps * env_cfg.sim.dt * env_cfg.decimation
 
     generator = env_cfg.scene.terrain.terrain_generator.copy()
-    stair = generator.sub_terrains["stairs_up"]
     generator.num_rows = 1
     generator.num_cols = 2 * cfg.envs_per_height
     generator.seed = cfg.seed
-    generator.sub_terrains = {
-        "stairs_up_low": stair.replace(proportion=0.5, step_height_range=(cfg.low_step_height_m, cfg.low_step_height_m)),
-        "stairs_up_high": stair.replace(proportion=0.5, step_height_range=(cfg.high_step_height_m, cfg.high_step_height_m)),
-    }
+    if args.terrain == "flat":
+        generator.sub_terrains = {"flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0)}
+    else:
+        stair = generator.sub_terrains["stairs_up"]
+        generator.sub_terrains = {
+            "stairs_up_low": stair.replace(proportion=0.5, step_height_range=(cfg.low_step_height_m, cfg.low_step_height_m)),
+            "stairs_up_high": stair.replace(proportion=0.5, step_height_range=(cfg.high_step_height_m, cfg.high_step_height_m)),
+        }
     env_cfg.scene.terrain.terrain_generator = generator
     env_cfg.scene.terrain.max_init_terrain_level = 0
 
@@ -68,6 +74,8 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
 
 def main():
     cfg = StairEvalCfg()
+    if args.spawn_forward_m is not None:
+        cfg.spawn_forward_m = args.spawn_forward_m
     env_cfg = make_eval_env_cfg(args.task, cfg)
     agent_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
     import importlib.metadata as metadata
@@ -81,14 +89,19 @@ def main():
     policy = runner.get_inference_policy(device=env.unwrapped.device)
     obs = env.get_observations()
     robot = env.unwrapped.scene["robot"]
+    foot_ids, foot_names = robot.find_bodies(".*_foot")
+    front_foot_ids = [body_id for body_id, name in zip(foot_ids, foot_names) if name.startswith("F")]
     terrain = env.unwrapped.scene.terrain
     origin = env.unwrapped.scene.env_origins.clone()
     start_z = robot.data.root_pos_w[:, 2].clone()
     command_sample = env.unwrapped.command_manager.get_command("base_velocity")[0].detach().cpu().tolist()
 
-    stair_cfg = env_cfg.scene.terrain.terrain_generator.sub_terrains["stairs_up_low"]
-    count, top_edge = stair_geometry(env_cfg.scene.terrain.terrain_generator.size,
-                                     stair_cfg.border_width, stair_cfg.platform_width, stair_cfg.step_width)
+    if args.terrain == "stairs":
+        stair_cfg = env_cfg.scene.terrain.terrain_generator.sub_terrains["stairs_up_low"]
+        count, first_riser, top_edge = stair_geometry(env_cfg.scene.terrain.terrain_generator.size,
+                                         stair_cfg.border_width, stair_cfg.platform_width, stair_cfg.step_width)
+    else:
+        count, first_riser, top_edge = 0, None, 0.0
     heights = torch.where(terrain.terrain_types < cfg.envs_per_height, cfg.low_step_height_m,
                           cfg.high_step_height_m).to(env.unwrapped.device)
     active = torch.ones(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
@@ -99,11 +112,15 @@ def main():
     max_outward = torch.zeros_like(max_steps)
     min_body_drop = torch.zeros_like(max_steps)
     consecutive = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.int)
+    trace = []
+    peak_front_foot_z = torch.full_like(max_steps, -float("inf"))
+    peak_front_foot_x = torch.full_like(max_steps, -float("inf"))
+    peak_front_foot_z_settled = torch.full_like(max_steps, -float("inf"))
 
-    for _ in range(cfg.episode_steps):
+    for step in range(cfg.episode_steps):
         with torch.inference_mode():
             actions = policy(obs)
-            obs, _, dones, extras = env.step(actions)
+            obs, rewards, dones, extras = env.step(actions)
             if getattr(policy, "is_recurrent", False):
                 policy.reset(dones)
             just_done = active & dones.bool()
@@ -116,20 +133,44 @@ def main():
             max_steps = torch.where(still_active, torch.maximum(max_steps, progress), max_steps)
             forward = robot.data.root_pos_w[:, 0] - origin[:, 0]
             max_outward = torch.where(still_active, torch.maximum(max_outward, forward), max_outward)
+            front_z = (robot.data.body_pos_w[:, front_foot_ids, 2] - origin[:, None, 2]).amax(dim=1)
+            front_x = (robot.data.body_pos_w[:, front_foot_ids, 0] - origin[:, None, 0]).amax(dim=1)
+            peak_front_foot_z = torch.where(still_active, torch.maximum(peak_front_foot_z, front_z), peak_front_foot_z)
+            peak_front_foot_x = torch.where(still_active, torch.maximum(peak_front_foot_x, front_x), peak_front_foot_x)
+            if step >= cfg.settle_steps:
+                peak_front_foot_z_settled = torch.where(still_active, torch.maximum(peak_front_foot_z_settled, front_z), peak_front_foot_z_settled)
             min_body_drop = torch.where(still_active, torch.minimum(min_body_drop, progress), min_body_drop)
             consecutive = torch.where(still_active & reached, consecutive + 1, torch.zeros_like(consecutive))
             success |= consecutive >= cfg.hold_steps
             active = still_active
+            if (step % cfg.trace_interval_steps == 0 or step == cfg.episode_steps - 1) and active.any():
+                reward_terms = env.unwrapped.reward_manager
+                trace.append({"step": step + 1,
+                              "forward_m_mean": forward[active].mean().item(),
+                              "forward_m_min": forward[active].min().item(),
+                              "forward_m_max": forward[active].max().item(),
+                              "body_vx_mps_mean": robot.data.root_lin_vel_b[active, 0].mean().item(),
+                              "body_z_gain_m_mean": (robot.data.root_pos_w[active, 2] - start_z[active]).mean().item(),
+                              "front_foot_z_m_mean": front_z[active].mean().item(),
+                              "front_foot_x_m_mean": front_x[active].mean().item(),
+                              "action_abs_mean": actions[active].abs().mean().item(),
+                              "reward_per_step_mean": rewards[active].mean().item(),
+                              "reward_terms_per_s": {name: reward_terms._step_reward[active, i].mean().item()
+                                                     for i, name in enumerate(reward_terms._term_names)},
+                              "active_rate": active.float().mean().item()})
 
-    report = {"task": args.task, "checkpoint": str(Path(args.checkpoint).resolve()),
+    report = {"task": args.task, "terrain": args.terrain, "checkpoint": str(Path(args.checkpoint).resolve()),
               "command_mps": cfg.forward_command_mps, "observed_command": command_sample,
               "spawn_forward_m": cfg.spawn_forward_m, "episode_steps": cfg.episode_steps,
-              "stair_count": count, "top_edge_m": top_edge, "success_rule":
+              "stair_count": count, "first_riser_m": first_riser, "top_edge_m": top_edge, "success_rule":
+              None if args.terrain == "flat" else
               f"body gain >= {cfg.top_height_fraction} * {count} * step height and forward x >= {top_edge-cfg.top_position_margin_m:.2f} m for {cfg.hold_steps} steps",
-              "groups": {}}
-    for name, sel in (("low", heights == cfg.low_step_height_m), ("high", heights == cfg.high_step_height_m)):
+              "groups": {}, "trace": trace, "foot_names": foot_names}
+    selections = (("flat", torch.ones_like(active)),) if args.terrain == "flat" else (
+        ("low", heights == cfg.low_step_height_m), ("high", heights == cfg.high_step_height_m))
+    for name, sel in selections:
         report["groups"][name] = {
-            "step_height_m": cfg.low_step_height_m if name == "low" else cfg.high_step_height_m,
+            "step_height_m": None if name == "flat" else cfg.low_step_height_m if name == "low" else cfg.high_step_height_m,
             "n": int(sel.sum().item()), "success_rate": success[sel].float().mean().item(),
             "non_timeout_rate": failed[sel].float().mean().item(),
             "timeout_rate": timed_out[sel].float().mean().item(),
@@ -139,6 +180,10 @@ def main():
             "max_forward_m_mean": max_outward[sel].mean().item(),
             "max_forward_m_max": max_outward[sel].max().item(),
             "min_body_drop_steps_mean": min_body_drop[sel].mean().item(),
+            "peak_front_foot_z_m_mean": peak_front_foot_z[sel].mean().item(),
+            "peak_front_foot_z_settled_m_mean": peak_front_foot_z_settled[sel].mean().item(),
+            "peak_front_foot_z_settled_m_max": peak_front_foot_z_settled[sel].max().item(),
+            "peak_front_foot_x_m_mean": peak_front_foot_x[sel].mean().item(),
         }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

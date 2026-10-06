@@ -19,11 +19,13 @@ class StairEvalCfg:
     spawn_lateral_range_m: float = 0.25
     spawn_forward_m: float = 1.0
     seed: int = 42
+    trace_interval_steps: int = 100
+    settle_steps: int = 50
 
 
 def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_width: float,
-                   step_width: float) -> tuple[int, float]:
-    """IsaacLab inverted_pyramid_stairs_terrain과 같은 단 수와 상단 경계 좌표."""
+                   step_width: float) -> tuple[int, float, float]:
+    """IsaacLab inverted_pyramid_stairs_terrain과 같은 단 수, 첫 단, 상단 경계 좌표."""
     if step_width <= 0:
         raise ValueError("step_width는 양수여야 한다")
     n_x = (size_xy[0] - 2 * border_width - platform_width) // (2 * step_width) + 1
@@ -32,7 +34,8 @@ def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_w
     if count < 1:
         raise ValueError("계단을 하나 이상 생성할 공간이 필요하다")
     top_edge = min(size_xy) / 2 - border_width
-    return count, top_edge
+    first_riser = top_edge - count * step_width
+    return count, first_riser, top_edge
 
 
 def stair_progress(root_xyz: torch.Tensor, origin_xyz: torch.Tensor, start_z: torch.Tensor,

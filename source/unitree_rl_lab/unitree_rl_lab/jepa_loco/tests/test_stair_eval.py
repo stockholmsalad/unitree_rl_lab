@@ -7,8 +7,9 @@ from unitree_rl_lab.jepa_loco.eval.stairs import stair_geometry, stair_progress
 
 
 def test_stair_geometry_matches_generator():
-    count, edge = stair_geometry((8.0, 8.0), 1.0, 3.0, 0.3)
+    count, first_riser, edge = stair_geometry((8.0, 8.0), 1.0, 3.0, 0.3)
     assert count == 6
+    assert first_riser == pytest.approx(1.2)
     assert edge == 3.0
     with pytest.raises(ValueError):
         stair_geometry((8.0, 8.0), 1.0, 3.0, 0.0)

@@ -1,0 +1,181 @@
+{
+  "task": "Unitree-Go2-JepaLoco-BlindGRU",
+  "terrain": "stairs",
+  "checkpoint": "/home/user/graduation/unitree_rl_lab/logs/rsl_rl/jepa_loco_blind_gru/2026-10-02_10-43-10_gru_blind_v2_s42_tmux/model_2999.pt",
+  "command_mps": 0.6,
+  "observed_command": [
+    0.6000000238418579,
+    0.0,
+    0.0
+  ],
+  "spawn_forward_m": 0.0,
+  "episode_steps": 1000,
+  "stair_count": 6,
+  "first_riser_m": 1.2000000000000002,
+  "top_edge_m": 3.0,
+  "success_rule": "body gain >= 0.9 * 6 * step height and forward x >= 2.90 m for 25 steps",
+  "groups": {
+    "low": {
+      "step_height_m": 0.09,
+      "n": 16,
+      "success_rate": 0.0,
+      "non_timeout_rate": 0.0,
+      "timeout_rate": 1.0,
+      "max_body_rise_steps_mean": 0.0,
+      "max_body_rise_steps_median": 0.0,
+      "max_body_rise_steps_max": 0.0,
+      "max_forward_m_mean": 1.0569168329238892,
+      "max_forward_m_max": 1.0787285566329956,
+      "min_body_drop_steps_mean": -1.1393969058990479,
+      "peak_front_foot_z_m_mean": 0.08876873552799225,
+      "peak_front_foot_z_settled_m_mean": 0.04801635816693306,
+      "peak_front_foot_z_settled_m_max": 0.05704641342163086,
+      "peak_front_foot_x_m_mean": 1.1799192428588867
+    },
+    "high": {
+      "step_height_m": 0.19,
+      "n": 16,
+      "success_rate": 0.0,
+      "non_timeout_rate": 0.0,
+      "timeout_rate": 1.0,
+      "max_body_rise_steps_mean": 0.0,
+      "max_body_rise_steps_median": 0.0,
+      "max_body_rise_steps_max": 0.0,
+      "max_forward_m_mean": 1.0556294918060303,
+      "max_forward_m_max": 1.0645394325256348,
+      "min_body_drop_steps_mean": -0.5196760892868042,
+      "peak_front_foot_z_m_mean": 0.08877427875995636,
+      "peak_front_foot_z_settled_m_mean": 0.04857471585273743,
+      "peak_front_foot_z_settled_m_max": 0.05737471580505371,
+      "peak_front_foot_x_m_mean": 1.1799135208129883
+    }
+  },
+  "trace": [
+    {
+      "step": 1,
+      "forward_m_mean": -0.00048339349450543523,
+      "forward_m_min": -0.0005478262901306152,
+      "forward_m_max": -0.00042940303683280945,
+      "body_vx_mps_mean": -0.03561254218220711,
+      "body_z_gain_m_mean": -0.001638004556298256,
+      "front_foot_z_m_mean": 0.0887715071439743,
+      "front_foot_x_m_mean": 0.18393650650978088,
+      "action_abs_mean": 0.33887165784835815,
+      "active_rate": 1.0
+    },
+    {
+      "step": 101,
+      "forward_m_mean": 0.9377255439758301,
+      "forward_m_min": 0.9232650399208069,
+      "forward_m_max": 0.9629132747650146,
+      "body_vx_mps_mean": 0.49636411666870117,
+      "body_z_gain_m_mean": -0.06445576250553131,
+      "front_foot_z_m_mean": 0.02470235899090767,
+      "front_foot_x_m_mean": 1.1368682384490967,
+      "action_abs_mean": 0.7446901798248291,
+      "active_rate": 1.0
+    },
+    {
+      "step": 201,
+      "forward_m_mean": 0.9931399822235107,
+      "forward_m_min": 0.9705103635787964,
+      "forward_m_max": 1.030983567237854,
+      "body_vx_mps_mean": -0.014977826736867428,
+      "body_z_gain_m_mean": -0.08705796301364899,
+      "front_foot_z_m_mean": 0.02355516515672207,
+      "front_foot_x_m_mean": 1.178310513496399,
+      "action_abs_mean": 0.52427738904953,
+      "active_rate": 1.0
+    },
+    {
+      "step": 301,
+      "forward_m_mean": 0.9762414693832397,
+      "forward_m_min": 0.9429953694343567,
+      "forward_m_max": 1.0252633094787598,
+      "body_vx_mps_mean": 0.0029576290398836136,
+      "body_z_gain_m_mean": -0.08677497506141663,
+      "front_foot_z_m_mean": 0.02387651614844799,
+      "front_foot_x_m_mean": 1.178542137145996,
+      "action_abs_mean": 0.5756266117095947,
+      "active_rate": 1.0
+    },
+    {
+      "step": 401,
+      "forward_m_mean": 0.9627629518508911,
+      "forward_m_min": 0.9187127351760864,
+      "forward_m_max": 1.0176080465316772,
+      "body_vx_mps_mean": 0.0073850033804774284,
+      "body_z_gain_m_mean": -0.08251328021287918,
+      "front_foot_z_m_mean": 0.023670168593525887,
+      "front_foot_x_m_mean": 1.177947998046875,
+      "action_abs_mean": 0.5419151186943054,
+      "active_rate": 1.0
+    },
+    {
+      "step": 501,
+      "forward_m_mean": 0.9513101577758789,
+      "forward_m_min": 0.9030157327651978,
+      "forward_m_max": 0.9958778619766235,
+      "body_vx_mps_mean": 0.0012732958421111107,
+      "body_z_gain_m_mean": -0.08332005143165588,
+      "front_foot_z_m_mean": 0.023622525855898857,
+      "front_foot_x_m_mean": 1.1755211353302002,
+      "action_abs_mean": 0.5303957462310791,
+      "active_rate": 1.0
+    },
+    {
+      "step": 601,
+      "forward_m_mean": 0.943964958190918,
+      "forward_m_min": 0.8765680193901062,
+      "forward_m_max": 1.0045009851455688,
+      "body_vx_mps_mean": 0.07158466428518295,
+      "body_z_gain_m_mean": -0.08002880215644836,
+      "front_foot_z_m_mean": 0.02378041110932827,
+      "front_foot_x_m_mean": 1.1625850200653076,
+      "action_abs_mean": 0.5560342669487,
+      "active_rate": 1.0
+    },
+    {
+      "step": 701,
+      "forward_m_mean": 0.927532970905304,
+      "forward_m_min": 0.724675178527832,
+      "forward_m_max": 1.0005475282669067,
+      "body_vx_mps_mean": 0.07104963064193726,
+      "body_z_gain_m_mean": -0.08143503963947296,
+      "front_foot_z_m_mean": 0.023570433259010315,
+      "front_foot_x_m_mean": 1.137814998626709,
+      "action_abs_mean": 0.49825572967529297,
+      "active_rate": 1.0
+    },
+    {
+      "step": 801,
+      "forward_m_mean": 0.9270598888397217,
+      "forward_m_min": 0.6266427636146545,
+      "forward_m_max": 1.0246341228485107,
+      "body_vx_mps_mean": 0.05503194406628609,
+      "body_z_gain_m_mean": -0.08405262231826782,
+      "front_foot_z_m_mean": 0.02409772388637066,
+      "front_foot_x_m_mean": 1.1301298141479492,
+      "action_abs_mean": 0.5127770900726318,
+      "active_rate": 1.0
+    },
+    {
+      "step": 901,
+      "forward_m_mean": 0.9134696125984192,
+      "forward_m_min": 0.598345160484314,
+      "forward_m_max": 1.0169706344604492,
+      "body_vx_mps_mean": 0.012849228456616402,
+      "body_z_gain_m_mean": -0.08469152450561523,
+      "front_foot_z_m_mean": 0.023449815809726715,
+      "front_foot_x_m_mean": 1.0988929271697998,
+      "action_abs_mean": 0.5099941492080688,
+      "active_rate": 1.0
+    }
+  ],
+  "foot_names": [
+    "FL_foot",
+    "FR_foot",
+    "RL_foot",
+    "RR_foot"
+  ]
+}
