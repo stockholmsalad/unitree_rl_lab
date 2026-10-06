@@ -2,6 +2,60 @@
 
 석사 졸업논문 구현 저장소. 이 문서는 확정된 설계 명세다. 명세에 없는 결정이 필요하면 임의로 정하지 말고 선택지와 근거를 제시한 뒤 확인을 받을 것.
 
+## 2026-10-06 연구 구조 전환 — 현재 우선 명세
+
+사용자가 제시한 Mamba + JEPA + privileged future terrain distillation 구조와 구현 요청에 따라
+이 절이 아래의 기존 §1, §4, §5, §7 중 **서로 충돌하는 부분을 대체**한다. 기존 절은 GRU
+기준선과 종전 반사실 연구안의 기록이다. §2 센서·전처리, §3의 50/10 Hz와 2초 context,
+§6의 명령 범위·종료 보상·기존 지형 커리큘럼, §8 작업 규칙은 계속 적용한다.
+
+### 목표 및 모델
+
+1. Depth 한 프레임을 기존 2채널 CNN에 통과시키고, 10 Hz 새 프레임에서만 갱신하는
+   시간축 backbone으로 context `h_t`를 만든다. 기존 GRU는 기준선으로 유지하고 Mamba를
+   같은 CNN·입력·평가 조건에서 비교한다. 실제 Mamba 구현은 라이브러리 설치·CUDA 빌드 검증 후 진행한다.
+2. **현재/미래 공유 terrain head** `g`를 두어 `z_current = g(h_t)`와
+   `z_future = g(P(h_t, p_t, c_t, Δ))`를 얻는다. 초기는 벡터 입력 MLP predictor.
+   이 설계에서 `c_t`는 현재 velocity command이며, 종전 K=8 primitive와 attention pooling은
+   새 모델의 주 경로에서 사용하지 않는다. 단일 command 조건 결과에 대해 종전의
+   행동별 반사실 제어가능성 주장은 하지 않는다.
+3. 실제 미래 Depth context를 EMA target encoder에 넣고 stop-gradient한
+   `h_target(t+Δ)`와 예측 `h_future`의 MSE를 `L_JEPA`로 쓴다.
+4. 특권 heightmap teacher는 현재 patch `H_current`, 명령을 SE(2)로 Δ초 적분한 예상 pose
+   주변 patch `H_future`, 현재+미래를 포함하는 wide patch를 비교한다. Current/Future는
+   동일한 teacher encoder를 공유한다. Wide와 Current+Future의 **policy 입력 총 terrain
+   latent 차원**을 맞춘다. teacher 정책은 PPO로 학습하고 확인된 checkpoint를 고정한 뒤
+   student distillation에 사용한다.
+5. Student는 `L_current = ||g(h_t)-sg(z_current^T)||²`와
+   `L_future = ||g(h_future)-sg(z_future^T)||²`를 학습한다. JEPA target의 실제 도착 pose와
+   teacher의 명령 외삽 pose가 어긋나므로, 같은 에피소드·명령 유지·위치/yaw 오차·teacher
+   patch 가시성을 검사한다. 유효 표본만 미래 손실에 쓰고 **유효 수로 정규화하며 mask
+   coverage를 기록**한다. 현재 distillation은 이 mask와 무관하게 학습한다.
+6. 초기 student 총 손실은 `λc L_current + m λf L_future + m λJ L_JEPA`.
+   세 계수·horizon·mask 허용오차는 configclass. Copy predictor `h_future=h_t`를
+   항상 비교해 시간창 겹침으로 생기는 복사 해를 탐지한다.
+7. Policy는 `[proprio, command, z_current, z_future]`를 입력으로 하는 MLP PPO.
+   PPO actor·critic과 teacher encoder의 파라미터, 학습 및 동결 경계를 명시적으로 분리한다.
+   실기 추론에는 Depth, proprio, command만 사용하며 EMA target·teacher heightmap은 제외한다.
+
+### 연구 실험 순서와 통과 조건
+
+1. 기존 blind/depth GRU PPO 기준선과 고정 계단 평가를 보관한다. 두 정책이 9 cm 첫 단에서
+   정지한 원인은 `docs/experiment_log.md`에 기록되어 있다.
+2. 카메라 없는 privileged **Current / Wide / Current+Future oracle** 세 조건을 같은
+   평가에서 학습·비교한다. 먼저 Current+Future가 Current보다 계단을 실제로 더 잘 오르는지
+   확인한다. Wide와의 동률은 허용한다. 보상·성공률만으로 통과시키지 않고 play 영상으로 본다.
+3. oracle이 실제로 오르는 것을 확인한 뒤 teacher checkpoint를 고정하고, Depth student
+   Current/Wide/Current+Future, distillation-only, distillation+JEPA, copy predictor를
+   동일 평가 조건에서 비교한다. DAgger 및 truncated BPTT 연결은 이 단계에서 구현·검증한다.
+4. GRU 결과를 확보한 뒤 동일 CNN에서 Mamba backbone을 비교한다. 실제 Go2 Depth
+   시퀀스가 준비되면 PPO policy와 terrain head를 고정하고 encoder/predictor를 real JEPA +
+   simulation replay로 적응시킨다. 실기 적응 실험은 로그 확보 후 시작한다.
+
+**남은 결정:** 기존 §6의 성능 기반 terrain curriculum은 연구 조건 간 난이도를 다르게
+만들 수 있다. 고정 iteration 스케줄로 바꾸는 안은 아직 확정되지 않았으므로 현재 구현은
+기존 커리큘럼을 유지한다. oracle 스모크는 학습 연결 검증일 뿐 등반 성능 검증이 아니다.
+
 ## 1. 연구 목표
 
 Depth 시퀀스로부터 행동 조건부 미래 latent를 JEPA 방식으로 예측하고, 여러 행동 후보에 대한 예측 latent를 정책 입력으로 사용하는 Unitree Go2 보행 정책을 IsaacLab + PPO로 학습한다. 핵심 주장은 두 가지다.

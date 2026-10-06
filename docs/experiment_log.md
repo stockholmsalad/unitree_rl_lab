@@ -263,6 +263,12 @@ depth 9 cm 정지 상태(901스텝)의 보상은 스텝당 평균 +0.0195다.
 
 ## 2026-10-06 — Privileged oracle 경로 구현 및 짧은 검증 (Z790)
 
+**설계 결정:** 사용자가 Mamba context, EMA JEPA, 공유 terrain head, command-extrapolated
+future heightmap teacher, real Depth 적응을 포함하는 새 연구 구조를 제시하고 구현을 요청했다.
+이에 따라 `CLAUDE.md` 맨 앞에 새 우선 명세를 추가했다. K=8 primitive와 InfoNCE는 종전
+연구안으로 보관하고 새 모델의 주 경로에서는 쓰지 않는다. 성능 기반 terrain curriculum을
+고정 스케줄로 바꾸는 변경은 아직 결정되지 않아 적용하지 않았다.
+
 계단 첫 단을 오르지 못하는 GRU 기준선 결과를 바탕으로, 제안된 새 연구 구조의 선행 조건인
 `Current`, `Wide`, `Current+Future` heightmap oracle PPO task를 구현했다. 세 task 모두
 카메라 없이 기존 proprio·보상·명령·지형·critic을 공유한다. `Current+Future`는 현재
@@ -277,6 +283,6 @@ future sample mask, 유효 표본 수로 나누는 latent MSE를 구현했다. �
 
 Isaac 앱 내부 테스트 **45개 통과**(회전된 미래 heightmap 기하 테스트 포함). Z790 RTX 5070 Ti에서 각 oracle task 8 env·1 iteration
 PPO 스모크가 종료 코드 0으로 완주했다. 이것은 관측 생성과 최적화 연결만 확인한 것이며,
-계단 등반 성능은 아직 검증되지 않았다. 설계 명세 §4–7과 충돌하는 단일 명령 predictor,
-JEPA MSE, teacher-first 단계, 고정 terrain schedule은 사용자 결정 후 명세를 개정해야 한다.
+계단 등반 성능은 아직 검증되지 않았다. 단일 명령 predictor, JEPA MSE, teacher-first
+단계는 새 우선 명세에 반영했다. 고정 terrain schedule은 여전히 별도 결정이 필요하다.
 현재 oracle 코드는 검증용 구현으로 두고 1시간 이상 본 학습은 실행하지 않았다.
