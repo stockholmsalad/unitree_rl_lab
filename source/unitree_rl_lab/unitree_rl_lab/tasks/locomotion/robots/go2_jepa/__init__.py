@@ -37,7 +37,7 @@ gym.register(
 
 gym.register(
     id="Unitree-Go2-JepaLoco-OracleCurrent",
-    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    entry_point="unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env:OracleCurriculumEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentEnvCfg",
@@ -49,7 +49,7 @@ gym.register(
 
 gym.register(
     id="Unitree-Go2-JepaLoco-OracleWide",
-    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    entry_point="unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env:OracleCurriculumEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleWideEnvCfg",
@@ -61,7 +61,7 @@ gym.register(
 
 gym.register(
     id="Unitree-Go2-JepaLoco-OracleCurrentFuture",
-    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    entry_point="unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env:OracleCurriculumEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentFutureEnvCfg",

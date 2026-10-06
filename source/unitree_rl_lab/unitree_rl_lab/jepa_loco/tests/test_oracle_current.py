@@ -9,6 +9,12 @@ from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import (
     OracleWideEnvCfg,
 )
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
+from unitree_rl_lab.jepa_loco.envs.path_curriculum import terrain_levels_path
+from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import (
+    OracleCurrentPPORunnerCfg,
+    OracleWidePPORunnerCfg,
+    OracleCurrentFuturePPORunnerCfg,
+)
 
 
 def test_oracle_cfg_has_heightscan_and_no_camera():
@@ -38,6 +44,21 @@ def test_wide_and_future_cfg_share_scan_grid_and_camera_free():
     assert wide.scene.wide_height_scanner.pattern_cfg.ordering == "yx"
     assert future.scene.wide_height_scanner.pattern_cfg.resolution == future.scene.height_scanner.pattern_cfg.resolution
     assert future.observations.terrain_future.scan.params["horizon_s"] == future.future_horizon_s
+
+
+def test_three_oracles_use_identical_curriculum_rewards_and_commands():
+    current, wide, future = OracleCurrentEnvCfg(), OracleWideEnvCfg(), OracleCurrentFutureEnvCfg()
+    for cfg in (current, wide, future):
+        assert cfg.curriculum.terrain_levels.func is terrain_levels_path
+        assert cfg.curriculum.terrain_levels.params == current.curriculum.terrain_levels.params
+        assert cfg.scene.terrain.terrain_generator.to_dict() == current.scene.terrain.terrain_generator.to_dict()
+        assert cfg.commands.base_velocity.to_dict() == current.commands.base_velocity.to_dict()
+        assert cfg.rewards.to_dict() == current.rewards.to_dict()
+    runners = (OracleCurrentPPORunnerCfg(), OracleWidePPORunnerCfg(), OracleCurrentFuturePPORunnerCfg())
+    for runner in runners[1:]:
+        assert runner.num_steps_per_env == runners[0].num_steps_per_env
+        assert runner.max_iterations == runners[0].max_iterations
+        assert runner.algorithm.to_dict() == runners[0].algorithm.to_dict()
 
 
 def test_future_oracle_shares_encoder_weights_and_matches_wide_capacity():

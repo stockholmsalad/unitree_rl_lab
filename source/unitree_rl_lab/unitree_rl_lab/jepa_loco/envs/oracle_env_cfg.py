@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
@@ -15,6 +16,15 @@ from unitree_rl_lab.tasks.locomotion import mdp
 
 from .blind_env_cfg import BlindObservationsCfg, BlindSceneCfg, JepaBlindEnvCfg, JepaBlindEnvCfg_PLAY
 from .oracle_heightmap import future_height_scan
+from .path_curriculum import terrain_levels_path
+
+
+@configclass
+class OraclePathCurriculumCfg:
+    terrain_levels = CurrTerm(
+        func=terrain_levels_path,
+        params={"command_name": "base_velocity", "up_fraction": 0.5, "down_command_fraction": 0.5},
+    )
 
 
 @configclass
@@ -35,12 +45,16 @@ class OracleObservationsCfg(BlindObservationsCfg):
 class OracleCurrentEnvCfg(JepaBlindEnvCfg):
     scene: BlindSceneCfg = BlindSceneCfg(num_envs=1024, env_spacing=2.5)
     observations: OracleObservationsCfg = OracleObservationsCfg()
+    curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
+    terrain_column_assignment_eps: float = 0.001
 
 
 @configclass
 class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
     scene: BlindSceneCfg = BlindSceneCfg(num_envs=32, env_spacing=2.5)
     observations: OracleObservationsCfg = OracleObservationsCfg()
+    curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
+    terrain_column_assignment_eps: float = 0.001
 
 
 @configclass
@@ -89,7 +103,7 @@ class OracleCurrentFutureObservationsCfg(OracleObservationsCfg):
 
 
 @configclass
-class OracleWideEnvCfg(JepaBlindEnvCfg):
+class OracleWideEnvCfg(OracleCurrentEnvCfg):
     scene: OracleWideSceneCfg = OracleWideSceneCfg(num_envs=1024, env_spacing=2.5)
     observations: OracleWideObservationsCfg = OracleWideObservationsCfg()
 
@@ -99,7 +113,7 @@ class OracleWideEnvCfg(JepaBlindEnvCfg):
 
 
 @configclass
-class OracleCurrentFutureEnvCfg(JepaBlindEnvCfg):
+class OracleCurrentFutureEnvCfg(OracleCurrentEnvCfg):
     scene: OracleWideSceneCfg = OracleWideSceneCfg(num_envs=1024, env_spacing=2.5)
     observations: OracleCurrentFutureObservationsCfg = OracleCurrentFutureObservationsCfg()
     future_horizon_s: float = 0.5
