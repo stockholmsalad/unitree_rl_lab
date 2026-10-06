@@ -6,8 +6,8 @@ import torch
 
 from .diagnostic_env import JepaDiagnosticEnv
 from .path_curriculum import (
-    obstacle_clearance_step, obstacle_outer_edges, terrain_column_type_ids,
-    terrain_level_means_by_type, xy_path_increment,
+    obstacle_clearance_edges, obstacle_clearance_step, stair_first_step_edges,
+    terrain_column_type_ids, terrain_level_means_by_type, xy_path_increment,
 )
 
 
@@ -31,12 +31,12 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
                 or progress.stall_speed_mps < 0 or progress.forward_attempt_speed_mps < 0
                 or progress.stall_hold_steps < 1):
             raise ValueError("진단 여유 거리와 정지 속도는 음수가 될 수 없다")
-        self._obstacle_outer_edges = obstacle_outer_edges(
+        self._obstacle_clearance_edges = obstacle_clearance_edges(
             generator.sub_terrains, generator.size, progress.clearance_margin_m,
         ).to(self.device)
         self._terrain_type_per_env = self._terrain_column_type_ids[self.scene.terrain.terrain_types.long()]
-        self._outer_edge_per_env = self._obstacle_outer_edges[self._terrain_type_per_env]
-        self.episode_obstacle_cleared = self._outer_edge_per_env <= 0
+        self._clearance_edge_per_env = self._obstacle_clearance_edges[self._terrain_type_per_env]
+        self.episode_obstacle_cleared = self._clearance_edge_per_env <= 0
         self._clearance_consecutive = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self._max_axis_excursion_m = torch.zeros(self.num_envs, device=self.device)
         self._near_step_stall_consecutive = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
@@ -48,12 +48,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         )
         stair_cfg = next((term for name, term in generator.sub_terrains.items() if name.startswith("stairs_up")), None)
         if stair_cfg is not None:
-            stair_count = int(min(
-                (generator.size[0] - 2 * stair_cfg.border_width - stair_cfg.platform_width) // (2 * stair_cfg.step_width) + 1,
-                (generator.size[1] - 2 * stair_cfg.border_width - stair_cfg.platform_width) // (2 * stair_cfg.step_width) + 1,
-            ))
-            self._first_riser_m = min(generator.size) / 2 - stair_cfg.border_width - stair_count * stair_cfg.step_width
-            self._first_step_far_edge_m = self._first_riser_m + stair_cfg.step_width
+            self._first_riser_m, self._first_step_far_edge_m = stair_first_step_edges(stair_cfg, generator.size)
         else:
             self._first_riser_m = float("inf")
             self._first_step_far_edge_m = float("inf")
@@ -74,7 +69,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         axis_excursion = local_xy.abs().amax(dim=1)
         self._max_axis_excursion_m[ids] = torch.maximum(self._max_axis_excursion_m[ids], axis_excursion)
         consecutive, cleared = obstacle_clearance_step(
-            root_xy, origin[:, :2], self._outer_edge_per_env[ids],
+            root_xy, origin[:, :2], self._clearance_edge_per_env[ids],
             self._clearance_consecutive[ids], self.episode_obstacle_cleared[ids],
             self.cfg.progress.clearance_hold_steps,
         )
@@ -137,7 +132,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             log = self.extras.setdefault("log", {})
             for type_id, name in enumerate(names):
                 mask = type_ids == type_id
-                if mask.any() and self._obstacle_outer_edges[type_id] > 0:
+                if mask.any() and self._obstacle_clearance_edges[type_id] > 0:
                     log[f"Curriculum/obstacle_clear_rate/{name}"] = cleared[mask].float().mean()
                     log[f"Curriculum/path_only_false_promotion_rate/{name}"] = (
                         path_qualified[mask] & ~cleared[mask]
@@ -156,8 +151,8 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             self._path_previous_xy[ids] = self.scene["robot"].data.root_pos_w[ids, :2]
             self._path_valid[ids] = True
             self._terrain_type_per_env[ids] = self._terrain_column_type_ids[self.scene.terrain.terrain_types[ids].long()]
-            self._outer_edge_per_env[ids] = self._obstacle_outer_edges[self._terrain_type_per_env[ids]]
-            self.episode_obstacle_cleared[ids] = self._outer_edge_per_env[ids] <= 0
+            self._clearance_edge_per_env[ids] = self._obstacle_clearance_edges[self._terrain_type_per_env[ids]]
+            self.episode_obstacle_cleared[ids] = self._clearance_edge_per_env[ids] <= 0
             self._clearance_consecutive[ids] = 0
             self._max_axis_excursion_m[ids] = 0.0
             self._near_step_stall_consecutive[ids] = 0

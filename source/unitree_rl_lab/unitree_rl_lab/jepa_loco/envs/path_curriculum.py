@@ -75,15 +75,29 @@ def terrain_levels_path(env, env_ids, *, command_name: str,
     return terrain.terrain_levels.float().mean()
 
 
-def obstacle_outer_edges(sub_terrains: dict, patch_size: tuple[float, float],
-                         margin_m: float) -> torch.Tensor:
-    """중앙 시작점에서 장애물 바깥의 안전한 지면까지 필요한 축별 거리."""
+def stair_first_step_edges(cfg, patch_size: tuple[float, float]) -> tuple[float, float]:
+    """IsaacLab 계단 생성 기하의 첫 단 시작점과 첫 단 바깥쪽 끝."""
+    if cfg.step_width <= 0:
+        raise ValueError("계단 폭은 양수여야 한다")
+    count = int(min(
+        (patch_size[0] - 2 * cfg.border_width - cfg.platform_width) // (2 * cfg.step_width) + 1,
+        (patch_size[1] - 2 * cfg.border_width - cfg.platform_width) // (2 * cfg.step_width) + 1,
+    ))
+    if count < 1:
+        raise ValueError("계단 단 수는 양수여야 한다")
+    first_riser = min(patch_size) / 2 - cfg.border_width - count * cfg.step_width
+    return first_riser, first_riser + cfg.step_width
+
+
+def obstacle_clearance_edges(sub_terrains: dict, patch_size: tuple[float, float],
+                             margin_m: float) -> torch.Tensor:
+    """중앙에서 첫 장애물(계단 첫 단 또는 gap)을 넘어야 하는 축별 거리."""
     if margin_m < 0:
         raise ValueError("통과 여유 거리는 음수가 될 수 없다")
     edges = []
     for name, cfg in sub_terrains.items():
         if name.startswith(("stairs_up", "stairs_down")):
-            edges.append(min(patch_size) / 2 - cfg.border_width + margin_m)
+            edges.append(stair_first_step_edges(cfg, patch_size)[1] + margin_m)
         elif name == "gap":
             edges.append(cfg.platform_width / 2 + max(cfg.gap_width_range) + margin_m)
         else:
@@ -94,7 +108,7 @@ def obstacle_outer_edges(sub_terrains: dict, patch_size: tuple[float, float],
 def obstacle_clearance_step(root_xy: torch.Tensor, origin_xy: torch.Tensor,
                             outer_edge_m: torch.Tensor, consecutive: torch.Tensor,
                             cleared: torch.Tensor, hold_steps: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """외곽 안전 지면에 연속으로 머물렀으면 통과. 0 임계값은 장애물 없는 지형이다."""
+    """첫 장애물 너머에 연속으로 머물렀으면 통과. 0 임계값은 장애물 없는 지형이다."""
     if root_xy.ndim != 2 or root_xy.shape[-1] != 2 or origin_xy.shape != root_xy.shape:
         raise ValueError("root_xy와 origin_xy는 [N,2]여야 한다")
     if outer_edge_m.shape != (root_xy.shape[0],) or consecutive.shape != outer_edge_m.shape or cleared.shape != outer_edge_m.shape:

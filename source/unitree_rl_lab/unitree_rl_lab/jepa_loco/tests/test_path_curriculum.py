@@ -6,11 +6,12 @@ from types import SimpleNamespace
 
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import (
     obstacle_clearance_step,
-    obstacle_outer_edges,
+    obstacle_clearance_edges,
     path_length_decisions,
     terrain_column_type_ids,
     terrain_level_means_by_type,
     terrain_levels_path,
+    stair_first_step_edges,
     xy_path_increment,
 )
 
@@ -53,13 +54,14 @@ def test_obstacle_gate_blocks_path_only_promotion():
 def test_obstacle_clearance_needs_sustained_outer_ground():
     sub_terrains = {
         "flat": SimpleNamespace(),
-        "stairs_up": SimpleNamespace(border_width=1.0),
-        "stairs_down": SimpleNamespace(border_width=1.0),
+        "stairs_up": SimpleNamespace(border_width=1.0, platform_width=3.0, step_width=0.3),
+        "stairs_down": SimpleNamespace(border_width=1.0, platform_width=3.0, step_width=0.3),
         "gap": SimpleNamespace(platform_width=3.0, gap_width_range=(0.1, 0.3)),
     }
-    assert obstacle_outer_edges(sub_terrains, (8.0, 8.0), 0.1).tolist() == pytest.approx([0.0, 3.1, 3.1, 1.9])
-    root = torch.tensor([[0.0, 0.0], [3.2, 0.0], [0.0, 3.2], [2.0, 0.0]])
-    edge = obstacle_outer_edges(sub_terrains, (8.0, 8.0), 0.1)
+    assert stair_first_step_edges(sub_terrains["stairs_up"], (8.0, 8.0)) == pytest.approx((1.2, 1.5))
+    assert obstacle_clearance_edges(sub_terrains, (8.0, 8.0), 0.1).tolist() == pytest.approx([0.0, 1.6, 1.6, 1.9])
+    root = torch.tensor([[0.0, 0.0], [1.7, 0.0], [0.0, 1.7], [2.0, 0.0]])
+    edge = obstacle_clearance_edges(sub_terrains, (8.0, 8.0), 0.1)
     consecutive = torch.zeros(4, dtype=torch.long)
     cleared = torch.zeros(4, dtype=torch.bool)
     for _ in range(2):
