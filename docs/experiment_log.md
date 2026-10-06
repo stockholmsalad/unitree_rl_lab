@@ -159,19 +159,24 @@ CLAUDE.md §6 대조군 설명 갱신.
 ## 2026-10-06 — v2 결과: depth GRU vs blind proprio-GRU (각 3000 iter, seed 42, pilab)
 
 런: `jepa_loco_depth_gru/2026-10-02_10-42-41_gru_depth_v2_s42_tmux`, `jepa_loco_blind_gru/2026-10-02_10-43-10_gru_blind_v2_s42_tmux`
-(같은 이름의 10:17/10:18 런은 재시작 전 런 — 비교에 쓰지 않음). 그림: `results/jepa_loco/figs/v2_depth_vs_blindgru_curves.png`.
+(같은 이름의 10:17/10:18 런은 재시작 전 런 — 비교에 쓰지 않음). 수정 그림: `results/jepa_loco/figs/v2_depth_vs_blindgru_curves_corrected.png`.
+기존 `v2_depth_vs_blindgru_curves.png`의 "fall share"는 `bad_orientation`만 세어 `base_contact`를 누락했다.
 
 | 마지막 200 iter 평균 | v1 depth | v2 depth | v2 blind GRU |
 |---|---|---|---|
 | 에피소드 길이 (/1000) | 771 | 972 | 959 |
-| 넘어짐 비율 (종료 중) | 0.317 | 0.046 | 0.015 |
+| 비시간초과 종료 비율 (`1 − time_out`) | 0.318 | 0.062 | 0.070 |
 | terrain level (/9) | 0.40 | 1.06 | 1.08 |
 | lin vel 추종 (/1.5) | 1.00 | 1.17 | 1.16 |
 | value loss | 1.97 (발산) | 0.024 | 0.029 |
 
 - **v2 수정은 효과가 있었다**: 초기 붕괴·value 발산 모두 사라짐(value loss > 5 인 iter: v1 440 → v2 0).
-- **그러나 depth ≈ blind (오히려 depth 넘어짐이 더 많음), 두 런 모두 terrain level ≈ 1/9 에 정체.**
-- **원인 — 커리큘럼 구조:** `terrain_levels_vel` 은 env 원점으로부터의 **직선 변위**가 4 m 를 넘어야 승급, 명령 속도 × 20 s × 0.5
+- **depth와 blind 모두 terrain level ≈ 1/9에서 정체.** 마지막 200 iter에서 depth 평균 보상 15.72, blind 12.39,
+  비시간초과 종료 6.2% vs 7.0%로 depth가 약간 앞서지만 단일 seed·성능 의존 지형 커리큘럼이라 depth 효과로 단정할 수 없다.
+  `base_contact`는 depth 1.7%, blind 5.6%; `bad_orientation`은 depth 4.6%, blind 1.5%로 실패 유형이 다르다.
+- **유력한 제약 — 커리큘럼 구조:** `terrain_levels_vel` 은 env 원점으로부터의 **직선 변위**가 4 m 를 넘어야 승급, 명령 속도 × 20 s × 0.5
   보다 짧으면 강등한다. 그런데 명령이 yaw rate(ωz ∈ ±0.8, heading_command=False)라 로봇이 원을 그리며 걷는다
   (vx 0.5, ωz 0.5 → 반경 1 m, 변위 ≤ 2 m). 잘 걸어도 승급 조건을 거의 못 채운다 → 두 정책 모두 쉬운 지형(계단 ~9 cm, gap ~12 cm)에
-  머물고, 그 난이도는 proprio 만으로 충분하다. **따라서 이 결과는 "depth 가 쓸모없다"가 아니라 "depth 가 필요한 지형에 가지 못했다"이다.**
+  머문다. yaw 명령 때문에 이 기준을 만족할 수 없는 궤적이 존재한다는 것은 코드·기하로 확인되지만,
+  이것이 정체의 유일한 원인인지는 궤적·지형별 평가 없이 확정할 수 없다. **이 데이터는 depth의 유용성 또는 무용성을
+  입증하지 못한다.** 두 런의 play 영상도 아직 없어 보행 통과 판정은 보류한다.
