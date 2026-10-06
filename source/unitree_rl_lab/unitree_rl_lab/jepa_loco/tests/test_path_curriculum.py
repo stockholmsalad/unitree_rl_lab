@@ -2,11 +2,13 @@
 
 import pytest
 import torch
+from types import SimpleNamespace
 
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import (
     path_length_decisions,
     terrain_column_type_ids,
     terrain_level_means_by_type,
+    terrain_levels_path,
     xy_path_increment,
 )
 
@@ -35,6 +37,28 @@ def test_up_wins_when_both_thresholds_match():
     assert up.item() and not down.item()
     with pytest.raises(ValueError):
         path_length_decisions(torch.zeros(2, 1), torch.zeros(2, 2), 8.0, 20.0, 0.5, 0.5)
+
+
+def test_curriculum_term_passes_path_decisions_to_terrain():
+    captured = {}
+    terrain = SimpleNamespace(
+        cfg=SimpleNamespace(terrain_type="generator", terrain_generator=SimpleNamespace(size=(8.0, 8.0))),
+        terrain_levels=torch.tensor([0, 2]),
+        update_env_origins=lambda ids, up, down: captured.update(ids=ids, up=up, down=down),
+    )
+    env = SimpleNamespace(
+        scene=SimpleNamespace(terrain=terrain),
+        command_manager=SimpleNamespace(get_command=lambda _: torch.tensor([[0.5, 0.0, 0.0], [0.5, 0.0, 0.0]])),
+        episode_path_length_m=torch.tensor([4.1, 0.2]),
+        max_episode_length_s=20.0,
+    )
+    ids = torch.tensor([0, 1])
+    mean = terrain_levels_path(env, ids, command_name="base_velocity", up_fraction=0.5,
+                               down_command_fraction=0.5)
+    assert captured["ids"] is ids
+    assert captured["up"].tolist() == [True, False]
+    assert captured["down"].tolist() == [False, True]
+    assert mean.item() == 1.0
 
 
 def test_terrain_type_columns_and_per_type_means():

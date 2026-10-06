@@ -302,7 +302,7 @@ seed를 쓴다. 최종 비교는 지형 종류 × 난이도 × seed 고정 평�
 TerrainGenerator seed를 환경 seed로 명시하여 같은 seed의 세 조건이 동일한 지형을
 생성한다. TensorBoard에 종류별 평균 terrain level 다섯 개와 평균 누적 경로 길이를 기록한다.
 
-**검증:** Isaac 앱 내부 테스트 **51개 통과**. Current oracle 8 env·1 iteration 스모크
+**검증:** Isaac 앱 내부 테스트 **52개 통과**. Current oracle 8 env·1 iteration 스모크
 완주. 해당 스모크에서 평균 누적 경로 길이 0.4063 m, 종류별 terrain level 5개가
 로그에 기록됐다. 고정 계단 평가에서는 curriculum을 꺼서 동일 지형을 유지하고,
 선택적으로 env 0 영상을 저장할 수 있게 했다. 아직 장시간 학습이나 등반 판정은 하지 않았다.
