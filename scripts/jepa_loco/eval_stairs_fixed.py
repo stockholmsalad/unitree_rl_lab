@@ -11,7 +11,13 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", choices=("Unitree-Go2-JepaLoco-DepthGRU", "Unitree-Go2-JepaLoco-BlindGRU"), required=True)
+parser.add_argument("--task", choices=(
+    "Unitree-Go2-JepaLoco-DepthGRU",
+    "Unitree-Go2-JepaLoco-BlindGRU",
+    "Unitree-Go2-JepaLoco-OracleCurrent",
+    "Unitree-Go2-JepaLoco-OracleWide",
+    "Unitree-Go2-JepaLoco-OracleCurrentFuture",
+), required=True)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--output", required=True)
 parser.add_argument("--terrain", choices=("stairs", "flat"), default="stairs")

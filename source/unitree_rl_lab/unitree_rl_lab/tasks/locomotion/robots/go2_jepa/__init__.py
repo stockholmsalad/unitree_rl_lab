@@ -33,3 +33,39 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:BlindMLPPPORunnerCfg",
     },
 )
+
+
+gym.register(
+    id="Unitree-Go2-JepaLoco-OracleCurrent",
+    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentEnvCfg",
+        "play_env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:OracleCurrentPPORunnerCfg",
+    },
+)
+
+
+gym.register(
+    id="Unitree-Go2-JepaLoco-OracleWide",
+    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleWideEnvCfg",
+        "play_env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleWideEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:OracleWidePPORunnerCfg",
+    },
+)
+
+
+gym.register(
+    id="Unitree-Go2-JepaLoco-OracleCurrentFuture",
+    entry_point="unitree_rl_lab.jepa_loco.envs.diagnostic_env:JepaDiagnosticEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentFutureEnvCfg",
+        "play_env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentFutureEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:OracleCurrentFuturePPORunnerCfg",
+    },
+)

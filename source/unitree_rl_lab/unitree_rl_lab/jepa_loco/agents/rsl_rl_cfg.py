@@ -85,3 +85,53 @@ class BlindMLPPPORunnerCfg(DepthGRUPPORunnerCfg):
         obs_normalization=True,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
     )
+
+
+@configclass
+class OracleActorCfg(RslRlMLPModelCfg):
+    class_name: str = "unitree_rl_lab.jepa_loco.models.oracle_actor:OracleTerrainActor"
+    terrain_group: str = "terrain_current"
+    terrain_latent_dim: int = 32
+    terrain_hidden_dim: int = 128
+    future_group: str | None = None
+
+
+@configclass
+class OracleCurrentPPORunnerCfg(DepthGRUPPORunnerCfg):
+    experiment_name = "jepa_loco_oracle_current"
+    obs_groups = {"actor": ["policy", "terrain_current"], "critic": ["critic"]}
+    actor = OracleActorCfg(
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
+
+
+@configclass
+class OracleWidePPORunnerCfg(OracleCurrentPPORunnerCfg):
+    experiment_name = "jepa_loco_oracle_wide"
+    obs_groups = {"actor": ["policy", "terrain_wide"], "critic": ["critic"]}
+    actor = OracleActorCfg(
+        terrain_group="terrain_wide",
+        terrain_latent_dim=64,
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
+
+
+@configclass
+class OracleCurrentFuturePPORunnerCfg(OracleCurrentPPORunnerCfg):
+    experiment_name = "jepa_loco_oracle_current_future"
+    obs_groups = {"actor": ["policy", "terrain_current", "terrain_future"], "critic": ["critic"]}
+    actor = OracleActorCfg(
+        terrain_group="terrain_current",
+        future_group="terrain_future",
+        terrain_latent_dim=32,
+        hidden_dims=[512, 256, 128],
+        activation="elu",
+        obs_normalization=True,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
