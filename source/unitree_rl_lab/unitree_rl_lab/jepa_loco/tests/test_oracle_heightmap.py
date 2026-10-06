@@ -33,3 +33,15 @@ def test_future_patch_visibility_and_shape_validation():
     assert patch.shape == (1, 187) and not visible.item()
     with pytest.raises(ValueError):
         sample_command_future_patch(wide[:, :10], far_command, 1.0, (4.0, 3.0), (1.6, 1.0), 0.1)
+
+
+def test_future_patch_rotates_with_extrapolated_yaw():
+    wide = _linear_wide()
+    command = torch.tensor([[0.0, 0.0, torch.pi / 2]])
+    patch, visible = sample_command_future_patch(wide, command, 1.0, (4.0, 3.0), (1.6, 1.0), 0.1)
+    x = torch.arange(-0.8, 0.8 + 1.0e-9, 0.1)
+    y = torch.arange(-0.5, 0.5 + 1.0e-9, 0.1)
+    xx, yy = torch.meshgrid(x, y, indexing="xy")
+    expected = (-2 * yy + 3 * xx).flatten()
+    assert visible.item()
+    assert torch.allclose(patch[0], expected, atol=1e-5)
