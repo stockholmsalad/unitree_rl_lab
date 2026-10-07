@@ -17,6 +17,7 @@ from unitree_rl_lab.tasks.locomotion import mdp
 
 from .blind_env_cfg import BlindObservationsCfg, BlindSceneCfg, JepaBlindEnvCfg, JepaBlindEnvCfg_PLAY
 from .depth_env_cfg import JepaRewardsCfg
+from .easy_start_terrain import EasyStartTerrainCfg, make_easy_start_terrain
 from .oracle_heightmap import future_height_scan
 from .path_curriculum import terrain_levels_path
 from .rewards import nominal_pose_hip, nominal_pose_thigh_calf, swing_foot_clearance
@@ -39,6 +40,8 @@ class OracleProgressCfg:
     stall_speed_mps: float = 0.1
     stall_hold_steps: int = 50
     forward_attempt_speed_mps: float = 0.2
+    warmup_levels: int = 0
+    first_tread_contact_threshold_n: float = 1.0
 
 
 @configclass
@@ -168,6 +171,32 @@ class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
     def __post_init__(self):
         super().__post_init__()
         configure_current_rewards(self)
+
+
+@configclass
+class OracleCurrentEasyStartEnvCfg(OracleCurrentEnvCfg):
+    easy_start: EasyStartTerrainCfg = EasyStartTerrainCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = make_easy_start_terrain(
+            self.scene.terrain.terrain_generator, self.easy_start,
+        )
+        self.progress.warmup_levels = self.easy_start.warmup_rows
+
+
+@configclass
+class OracleCurrentEasyStartEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg):
+    scene: BlindSceneCfg = BlindSceneCfg(num_envs=32, env_spacing=2.5)
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.commands.base_velocity.initial_ranges = self.commands.base_velocity.final_ranges.copy()
+        self.commands.base_velocity.ranges = self.commands.base_velocity.final_ranges.copy()
+        self.scene.num_envs = 32
+        self.scene.terrain.max_init_terrain_level = self.easy_start.num_rows - 1
+        self.observations.policy.enable_corruption = False
+        self.events.push_robot = None
 
 
 @configclass

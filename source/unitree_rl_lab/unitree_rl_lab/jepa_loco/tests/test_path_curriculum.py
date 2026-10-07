@@ -5,6 +5,7 @@ import torch
 from types import SimpleNamespace
 
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import (
+    effective_clearance_edges,
     obstacle_clearance_step,
     obstacle_clearance_edges,
     path_length_decisions,
@@ -49,6 +50,20 @@ def test_obstacle_gate_blocks_path_only_promotion():
     )
     assert up.tolist() == [False, True]
     assert down.tolist() == [False, False]
+
+
+def test_warmup_uses_path_only_then_obstacle_gate():
+    edges = effective_clearance_edges(
+        torch.tensor([0.0, 1.6]), torch.tensor([1, 1, 1]),
+        torch.tensor([0, 1, 2]), warmup_levels=2,
+    )
+    assert edges.tolist() == pytest.approx([0.0, 0.0, 1.6])
+    consecutive, cleared = obstacle_clearance_step(
+        torch.zeros(3, 2), torch.zeros(3, 2), edges,
+        torch.zeros(3, dtype=torch.long), torch.zeros(3, dtype=torch.bool), 10,
+    )
+    up, _ = path_length_decisions(torch.full((3,), 5.0), torch.zeros(3, 2), 8.0, 20.0, 0.5, 0.5, cleared)
+    assert up.tolist() == [True, True, False]
 
 
 def test_obstacle_clearance_needs_sustained_outer_ground():

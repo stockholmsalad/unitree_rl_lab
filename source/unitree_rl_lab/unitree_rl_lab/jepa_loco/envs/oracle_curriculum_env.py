@@ -6,9 +6,10 @@ import torch
 
 from .diagnostic_env import JepaDiagnosticEnv
 from .path_curriculum import (
-    obstacle_clearance_edges, obstacle_clearance_step, stair_first_step_edges,
+    effective_clearance_edges, obstacle_clearance_edges, obstacle_clearance_step, stair_first_step_edges,
     terrain_column_type_ids, terrain_level_means_by_type, xy_path_increment,
 )
+from .obstacle_diagnostics import TERMINATION_NAMES, first_tread_contact, termination_classes
 
 
 class OracleCurriculumEnv(JepaDiagnosticEnv):
@@ -29,14 +30,19 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         progress = cfg.progress
         if (progress.stair_approach_margin_m < 0 or progress.first_step_progress_margin_m < 0
                 or progress.stall_speed_mps < 0 or progress.forward_attempt_speed_mps < 0
-                or progress.stall_hold_steps < 1):
+                or progress.stall_hold_steps < 1 or progress.warmup_levels < 0
+                or progress.first_tread_contact_threshold_n < 0):
             raise ValueError("진단 여유 거리와 정지 속도는 음수가 될 수 없다")
         self._obstacle_clearance_edges = obstacle_clearance_edges(
             generator.sub_terrains, generator.size, progress.clearance_margin_m,
         ).to(self.device)
         self._terrain_type_per_env = self._terrain_column_type_ids[self.scene.terrain.terrain_types.long()]
-        self._clearance_edge_per_env = self._obstacle_clearance_edges[self._terrain_type_per_env]
+        self._clearance_edge_per_env = effective_clearance_edges(
+            self._obstacle_clearance_edges, self._terrain_type_per_env,
+            self.scene.terrain.terrain_levels, progress.warmup_levels,
+        )
         self.episode_obstacle_cleared = self._clearance_edge_per_env <= 0
+        self.episode_first_tread_contact = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
         self._clearance_consecutive = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self._max_axis_excursion_m = torch.zeros(self.num_envs, device=self.device)
         self._near_step_stall_consecutive = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
@@ -44,6 +50,10 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         self._swing_foot_z_max_m = torch.full((self.num_envs,), -float("inf"), device=self.device)
         self._stairs_up_type_ids = torch.tensor(
             [i for i, name in enumerate(self._terrain_type_names) if name.startswith("stairs_up")],
+            device=self.device, dtype=torch.long,
+        )
+        self._stairs_down_type_ids = torch.tensor(
+            [i for i, name in enumerate(self._terrain_type_names) if name.startswith("stairs_down")],
             device=self.device, dtype=torch.long,
         )
         stair_cfg = next((term for name, term in generator.sub_terrains.items() if name.startswith("stairs_up")), None)
@@ -58,6 +68,10 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         contact_by_name = dict(zip(contact_names, contact_ids))
         self._robot_foot_ids = foot_ids
         self._contact_foot_ids = [contact_by_name[name] for name in foot_names]
+        self._front_robot_foot_ids = [body_id for body_id, name in zip(foot_ids, foot_names) if name.startswith("F")]
+        self._front_contact_foot_ids = [contact_by_name[name] for name in foot_names if name.startswith("F")]
+        if len(self._front_robot_foot_ids) != 2:
+            raise ValueError("앞발 접촉 진단에는 앞발 두 개가 필요하다")
 
     def _update_progress(self, ids):
         if ids.numel() == 0:
@@ -77,6 +91,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         self.episode_obstacle_cleared[ids] = cleared
         near_stair = (
             torch.isin(self._terrain_type_per_env[ids], self._stairs_up_type_ids)
+            & (self.scene.terrain.terrain_levels[ids] >= self.cfg.progress.warmup_levels)
             & (axis_excursion >= self._first_riser_m - self.cfg.progress.stair_approach_margin_m)
             & (axis_excursion <= self._first_step_far_edge_m)
         )
@@ -96,6 +111,16 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         swing = air_time > 0
         swing_z = torch.where(swing & near_stair[:, None], feet_z, -float("inf")).amax(dim=1)
         self._swing_foot_z_max_m[ids] = torch.maximum(self._swing_foot_z_max_m[ids], swing_z)
+        front_xy = robot.data.body_pos_w[ids][:, self._front_robot_foot_ids, :2]
+        contact = self.scene.sensors["contact_forces"].data.net_forces_w[ids][:, self._front_contact_foot_ids]
+        front_force_n = torch.linalg.vector_norm(contact, dim=-1)
+        on_stairs = torch.isin(self._terrain_type_per_env[ids], self._stairs_up_type_ids)
+        on_stairs |= torch.isin(self._terrain_type_per_env[ids], self._stairs_down_type_ids)
+        on_stairs &= self.scene.terrain.terrain_levels[ids] >= self.cfg.progress.warmup_levels
+        self.episode_first_tread_contact[ids] |= on_stairs & first_tread_contact(
+            front_xy, origin[:, :2], front_force_n, self._first_riser_m,
+            self._first_step_far_edge_m, self.cfg.progress.first_tread_contact_threshold_n,
+        )
 
     def _reset_idx(self, env_ids):
         # IsaacLab은 이 호출 직후 curriculum을 계산한다. 종료를 일으킨 마지막 스텝을 먼저 더한다.
@@ -106,7 +131,16 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             self._update_progress(ids)
             names = self._terrain_type_names
             type_ids = self._terrain_type_per_env[ids]
-            stair = torch.isin(type_ids, self._stairs_up_type_ids)
+            levels = self.scene.terrain.terrain_levels[ids].clone()
+            terminal_axis = (xy - self.scene.env_origins[ids, :2]).abs().amax(dim=1)
+            near_first_step = (terminal_axis - self._first_riser_m).abs() <= self.cfg.progress.stair_approach_margin_m
+            term_classes = termination_classes(
+                self.termination_manager.get_term("time_out")[ids],
+                self.termination_manager.get_term("base_contact")[ids],
+                self.termination_manager.get_term("bad_orientation")[ids],
+            )
+            first_tread_attempt = self.episode_first_tread_contact[ids].clone()
+            stair = torch.isin(type_ids, self._stairs_up_type_ids) & (levels >= self.cfg.progress.warmup_levels)
             approached = self._max_axis_excursion_m[ids] >= self._first_riser_m - self.cfg.progress.stair_approach_margin_m
             advanced = self._max_axis_excursion_m[ids] >= self._first_step_far_edge_m + self.cfg.progress.first_step_progress_margin_m
             stalled = stair & approached & ~advanced & (
@@ -138,16 +172,33 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             log = self.extras.setdefault("log", {})
             for type_id, name in enumerate(names):
                 mask = type_ids == type_id
-                if mask.any() and self._obstacle_clearance_edges[type_id] > 0:
-                    log[f"Curriculum/obstacle_clear_rate/{name}"] = cleared[mask].float().mean()
+                obstacle_mask = mask & (levels >= self.cfg.progress.warmup_levels)
+                if obstacle_mask.any() and self._obstacle_clearance_edges[type_id] > 0:
+                    log[f"Curriculum/obstacle_clear_rate/{name}"] = cleared[obstacle_mask].float().mean()
                     log[f"Curriculum/path_only_false_promotion_rate/{name}"] = (
-                        path_qualified[mask] & ~cleared[mask]
+                        path_qualified[obstacle_mask] & ~cleared[obstacle_mask]
                     ).float().mean()
                 if mask.any() and name in ("flat", "stairs_up") and clearance_sum is not None:
                     count = clearance_count[mask].sum()
                     if count > 0:
                         log[f"Diagnosis/swing_clearance_mean_m/{name}"] = clearance_sum[mask].sum() / count
                         log[f"Diagnosis/swing_clearance_max_m/{name}"] = clearance_max[mask].amax()
+                if name in ("stairs_up", "stairs_down"):
+                    for level in range(self.cfg.scene.terrain.terrain_generator.num_rows):
+                        at_level = mask & (levels == level)
+                        if not at_level.any():
+                            continue
+                        prefix = f"Diagnosis/{name}/level_{level}"
+                        log[f"{prefix}/episode_count"] = at_level.sum()
+                        log[f"{prefix}/first_tread_attempt_rate"] = first_tread_attempt[at_level].float().mean()
+                        if level >= self.cfg.progress.warmup_levels:
+                            log[f"{prefix}/obstacle_clear_rate"] = cleared[at_level].float().mean()
+                        else:
+                            log[f"{prefix}/warmup_path_only"] = torch.ones((), device=self.device)
+                        near = at_level & near_first_step & (level >= self.cfg.progress.warmup_levels)
+                        log[f"{prefix}/near_first_step_episode_count"] = near.sum()
+                        for class_id, reason in enumerate(TERMINATION_NAMES):
+                            log[f"{prefix}/near_termination/{reason}_count"] = (near & (term_classes == class_id)).sum()
             for label, mask in (("approach_stall", stalled), ("forward_attempt", attempted)):
                 if mask.any():
                     for name, values in reward_sums.items():
@@ -156,14 +207,24 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
                     finite = torch.isfinite(swing_height[mask])
                     if finite.any():
                         log[f"Diagnosis/stairs_up/{label}/swing_foot_z_max_m"] = swing_height[mask][finite].mean()
+                for level in range(self.cfg.scene.terrain.terrain_generator.num_rows):
+                    at_level = mask & (levels == level)
+                    log[f"Diagnosis/stairs_up/level_{level}/{label}/episode_count"] = at_level.sum()
+                    if at_level.any():
+                        for name, values in reward_sums.items():
+                            log[f"Diagnosis/stairs_up/level_{level}/{label}/episode_reward_sum/{name}"] = values[at_level].mean()
             if stair.any():
                 log["Diagnosis/stairs_up/first_step_progress_rate"] = advanced[stair].float().mean()
             self.episode_path_length_m[ids] = 0.0
             self._path_previous_xy[ids] = self.scene["robot"].data.root_pos_w[ids, :2]
             self._path_valid[ids] = True
             self._terrain_type_per_env[ids] = self._terrain_column_type_ids[self.scene.terrain.terrain_types[ids].long()]
-            self._clearance_edge_per_env[ids] = self._obstacle_clearance_edges[self._terrain_type_per_env[ids]]
+            self._clearance_edge_per_env[ids] = effective_clearance_edges(
+                self._obstacle_clearance_edges, self._terrain_type_per_env[ids],
+                self.scene.terrain.terrain_levels[ids], self.cfg.progress.warmup_levels,
+            )
             self.episode_obstacle_cleared[ids] = self._clearance_edge_per_env[ids] <= 0
+            self.episode_first_tread_contact[ids] = False
             self._clearance_consecutive[ids] = 0
             self._max_axis_excursion_m[ids] = 0.0
             self._near_step_stall_consecutive[ids] = 0

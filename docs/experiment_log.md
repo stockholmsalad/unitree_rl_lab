@@ -580,3 +580,79 @@ Isaac 앱 내부 테스트 61개와 OracleCurrent 8 env·1 iteration 스모크�
 결정한다. 최종 통과는 고정 9 cm 성공 >0, 첫 단 통과율 >0, 평지
 정상 보행을 모두 요구한다. 예상 소요는 Z790 약 9.5시간이며,
 본 학습은 사용자 확인 전까지 시작하지 않는다.
+
+**A안 전 사전 점검 (2026-10-07, 지형 변경 전):** Z790 nominal 런은 점검 당시
+진행 중이어서 로컬 최신 `2026-10-07_15-07-23_oracle_current_nominal_s43/model_700.pt`를
+사용했다. 고정 계단 평가는 중심 출발·직진 0.6 m/s·높이별 16 env·20 s였다.
+
+- **승급 게이트와 로그:** 실제 학습 설정 10행의 `stairs_up`, `stairs_down`, `gap`
+  각각에서 로봇을 첫 장애물 앞/첫 단 윗면/통과 경계 +0.05 m로 옮겨 11회
+  갱신했다. 앞과 윗면은 모두 `episode_obstacle_cleared=False`, reset 로그
+  `obstacle_clear_rate=0`이었다. 경계 너머는 세 지형 모두 `True`와
+  `obstacle_clear_rate=1`이었다. 첫 계단 riser x=1.20 m, 첫 단 바깥 x=1.50 m,
+  게이트 x=1.60 m, gap 게이트 x=1.90 m였다. 게이트·로깅 불능은 확인되지 않았다.
+- **종료 설정:** `time_out`, base 접촉력 >1 N인 `base_contact`, 몸통 기울기
+  >0.8 rad인 `bad_orientation` 세 항이다. `undesired_contacts` 보상 센서 대상은
+  Head, hip, thigh, calf이고 foot은 포함하지 않는다. 3/5/9 cm 평가의
+  비시간초과 종료는 각각 **0/16**이었다. 종료 시 첫 riser ±0.4 m 범위의
+  기록은 3 cm 14건, 5 cm 16건, 9 cm 16건으로 모두 `time_out`이었다.
+  19 cm도 비시간초과 종료 0/16이었다.
+- **첫 단 접촉 보상:** 3 cm와 5 cm에서 앞발 중심이 riser 2 cm 전까지
+  도달한 최초 접촉 이후 4스텝 기록을 각 16 env에서 얻었다. 3 cm에는
+  `undesired_contacts`와 `termination`이 모두 0이었다. 5 cm에는
+  `Head_lower` 접촉 이력으로 한 스텝 `undesired_contacts=-0.02`가 있었고
+  `termination=0`이었다. 9/19 cm는 앞발이 이 접촉 기록 조건에 도달하지
+  못해 접촉 직후 보상 표본이 없다. 큰 접촉·종료 페널티가 등반을 막는다는
+  직접 증거는 이번 점검에서 나오지 않았다.
+- **메시:** 학습 레벨 0의 ray hit는 중앙 평지에서 첫 단 윗면으로
+  stairs_up +0.0878 m, stairs_down −0.0915 m 변했다. 앞발 하나가
+  stairs_up 첫 단 범위 x≈1.27 m에서 약 51 N 접촉력을 보여 충돌 표면이
+  실제로 발을 지지한다. 로봇을 기본 관절 목표·zero action으로 첫 단에
+  옮기면 20스텝 뒤 몸통이 x≈1.16 m로 뒤로 밀렸으므로 이 임의 자세에서의
+  지속 정지는 확인되지 않았다. 단 폭 0.3 m보다 앞뒤 발 간격이 길어
+  중앙/첫 단/둘째 단을 동시에 딛는 시작 자세이며, 이 결과만으로 메시
+  결함이라 판정하지 않는다. 첫 단 위치와 충돌 높이는 기하 계산과 맞는다.
+
+원시 결과:
+`results/jepa_loco/stair_eval/oracle_obstacle_gate_precheck_s43.json`,
+`results/jepa_loco/stair_eval/oracle_current_nominal_s43_precheck_3cm_5cm_contact.json`,
+`results/jepa_loco/stair_eval/oracle_current_nominal_s43_precheck_9cm_19cm_contact.json`.
+게이트, 종료, 페널티, 메시의 확인 가능한 항목에서 A안을 막는 결함은
+발견되지 않았다. 물리적으로 임의 첫 단 자세에서 정지하지 않은 한계는
+본 학습 중 접촉·시도율 로그와 play에서 다시 확인한다.
+
+**A안 구현 및 본 학습 전 검증 (2026-10-07):** nominal 설정을 보존하기 위해
+`Unitree-Go2-JepaLoco-OracleCurrent-EasyStart` 별도 task를 만들었다. 지형만
+변경한다. stairs_up/down/gap 열의 행 0·1은 평지, 행 2~9는 장애물이다.
+계단 폭 0.3 m와 지형 비율·20열은 그대로 두고, 계단 높이는 행 2에서
+0.05 m, 행 9에서 0.20 m까지 선형으로 증가한다. gap은 0.10~0.30 m다.
+IsaacLab이 행별 difficulty에 작은 난수를 넣으므로 생성 함수가 행을 복원해
+해당 행의 높이/폭을 고정한다. 워밍업 행은 경로 길이만으로 승급한다.
+행 수·워밍업 수·범위는 `EasyStartTerrainCfg`에 노출한다.
+
+학습 중 `Diagnosis/stairs_up|stairs_down/level_{i}`에 실제 장애물 행의 첫 단
+앞발 접촉 시도율, 통과율, 첫 riser ±0.4 m에서 종료한 에피소드의
+`time_out`/`base_contact`/`bad_orientation`/기타 횟수, 종료 에피소드
+수를 남긴다. 워밍업 행은 `warmup_path_only`로 표시하며 실제 장애물
+통과율의 분모에 넣지 않는다. 기존 stairs_up 접근 정지·전진 시도 그룹에
+레벨별 표본 수와 보상 항별 에피소드 합을 추가했다. 시도율은 앞발 하나라도
+첫 단 윗면 XY 범위에서 접촉력 ≥1 N이 된 에피소드 비율이다.
+
+사전 점검 모델은 진행 중이던 nominal seed 43의 `model_700.pt`다.
+3/5/9/19 cm 고정 계단 평가 모두 성공 0/16, 비시간초과 종료 0/16이었다.
+따라서 이번 A안은 5 cm부터 **학습**하는 효과를 보는 실험이며, 이 결과를
+5 cm 학습 실패로 해석하지 않는다. 비교 대상은 같은 seed의 nominal 런이다.
+Isaac 앱 내부 전체 테스트 **67개 통과**와 신규 task 8 env·1 iteration
+스모크 **통과**를 확인했다. 스모크 TensorBoard에서 레벨 0 stairs_up
+`episode_count=2`, `warmup_path_only=1`, `first_tread_attempt_rate=0`이고
+실제 장애물 통과율과 첫 단 전진율은 기록되지 않았다. 생성 메시 단위
+테스트는 행 0·1의 z 범위가 0이고, 행 9와 행 2의 계단 높이 비가 4임을
+확인했다. 8 env·1 iteration은 레벨 2 성능을 검증하지 않는다.
+
+**사전 조기 판정:** iteration 500 부근 레벨 2(5 cm) stairs_up의 시도율>0,
+통과율=0이면 즉시 중단하고 종료 사유와 접촉 body를 조사한다. 시도율=0이면
+접근 회피로 보고 정지/전진 시도 그룹의 보상 항별 합을 조사한다.
+통과율>0이면 계속해 iteration 1500의 레벨 진행을 본다. 최종 통과는
+고정 9 cm 성공>0, 학습 중 첫 단 통과율>0, 평지 정상 보행이다.
+본 학습 예정값은 pilab seed 42, Z790 seed 43, 각 2048 env·3000 iteration,
+run_name `oracle_current_easystart_s42`/`s43`이다. 사용자 확인 전 시작하지 않는다.

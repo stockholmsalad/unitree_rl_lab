@@ -118,3 +118,13 @@ def obstacle_clearance_step(root_xy: torch.Tensor, origin_xy: torch.Tensor,
     outside = (root_xy - origin_xy).abs().amax(dim=1) >= outer_edge_m
     next_consecutive = torch.where(outside, consecutive + 1, 0)
     return next_consecutive, cleared | (outer_edge_m <= 0) | (next_consecutive >= hold_steps)
+
+
+def effective_clearance_edges(type_edges: torch.Tensor, type_ids: torch.Tensor,
+                              levels: torch.Tensor, warmup_levels: int) -> torch.Tensor:
+    """평지 워밍업 행에는 장애물 통과 게이트를 적용하지 않는다."""
+    if type_edges.ndim != 1 or type_ids.shape != levels.shape or type_ids.ndim != 1:
+        raise ValueError("지형별 경계는 [T], 종류/레벨은 [N]이어야 한다")
+    if warmup_levels < 0:
+        raise ValueError("워밍업 레벨은 음수가 될 수 없다")
+    return torch.where(levels < warmup_levels, 0.0, type_edges[type_ids.long()])
