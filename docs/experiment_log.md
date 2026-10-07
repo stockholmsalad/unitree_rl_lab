@@ -658,3 +658,10 @@ Isaac 앱 내부 전체 테스트 **67개 통과**와 신규 task 8 env·1 itera
 고정 9 cm 성공>0, 학습 중 첫 단 통과율>0, 평지 정상 보행이다.
 본 학습 예정값은 pilab seed 42, Z790 seed 43, 각 2048 env·3000 iteration,
 run_name `oracle_current_easystart_s42`/`s43`이다. 사용자 확인 전 시작하지 않는다.
+
+**비교 자료 상태 (2026-10-07 17:50 KST):** 로컬 nominal seed 43 런의
+TensorBoard 마지막 기록은 iteration 704, 마지막 checkpoint는 `model_700.pt`다.
+현재 해당 학습 프로세스와 tmux 세션은 보이지 않는다. 종료 원인은 이
+점검에서 확인하지 않았다. 따라서 seed 43의 3000 iteration 전체 곡선은
+아직 없고, A안과 nominal의 동일 예산 비교는 현재 0~704 구간까지만
+가능하다. pilab nominal seed 42 상태는 이 머신에서 확인되지 않았다.
