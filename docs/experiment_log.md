@@ -532,3 +532,51 @@ Isaac 앱 내부 테스트 58개와 OracleCurrent 8 env·1 iteration 스모크�
 `Diagnosis/swing_clearance_mean_m/flat`이 **0.06 m를 넘지 못하면**
 (기존 정책 약 0.044 m), 현재 보상 신호가 약한 것으로 보고 학습을 중단한다.
 가중치 상향 여부와 새 값은 사용자와 결정한 뒤 별도 실행으로 검증한다.
+
+**스윙 높이 보상 단독 런 조기 중단 및 기본 자세 가설 (2026-10-07):**
+사용자 결정으로 Z790 `oracle_current_swing_s43`을 iteration 813 무렵 중단했다.
+마지막 checkpoint는 `2026-10-07_10-07-30_oracle_current_swing_s43/model_800.pt`.
+미리 정한 평지 clearance 기준 0.06 m에 못 미쳐 약 0.030 m였고,
+stairs_up은 iteration 300 이후 약 0.023 m로 정체했다. stairs_up 첫 단
+통과율은 0이었다. 발 높이 보상은 약 +0.0185/s(20초당 약 +0.4)였으나
+에피소드 길이 987, 넘어짐 약 2.9%로 보행 자체는 안정적이었다.
+
+새 가설은 기본 자세 `joint_pos` 페널티가 발 들기를 억제한다는 것이다.
+우리 기존 함수는 12관절 편차의 **L2 노름**에 −0.7을 곱하고 정지 시
+×5한다. 중단된 정책에서 약 −6/에피소드로 선속도 추종 최대 +30의
+약 20%다. [APT-RL Table S3](https://arxiv.org/html/2607.13579)는
+제곱합을 명령 XY 속도의 제곱으로 정규화한 명목 자세 항에 −0.005를
+쓴다. APT-RL의 추종 대비 규모를 대략 0.1~1%로 보는 것은 보행
+상태에 따른 추정이며 논문의 가중치만으로 확정되는 값은 아니다.
+함수 형태가 달라 계수 비율만으로 페널티 세기를 비교하지 않는다.
+이전 연구에서 `joint_pos`를 −0.7에서 −0.3으로 완화했을 때 다리를
+바깥으로 벌리는 거미 자세가 나타났다. 따라서 hip 항은 기존 형태와
+계수 −0.7을 유지하고 thigh/calf 항만 완화한다. 별도의 hip roll
+제한 보상은 이번 실험에 추가하지 않는다.
+
+OracleCurrent의 기존 `joint_pos` 하나를 `nominal_hip`과
+`nominal_thigh_calf` 두 항으로 대체했다. 전자는 hip 편차 L2 노름,
+후자는 thigh/calf 편차 제곱합을 `max(||v_cmd,xy||²,1)`로 나눈다.
+두 항 모두 기존과 같은 정지 판정과 ×5 배율을 쓴다. 관절 정규식·계수·
+정지 판정·정규화 방식은 configclass에 노출했다. 다른 보상과 학습 설정은
+swing 단독 런과 동일하다. Wide와 Current+Future는 아직 기존 보상이다.
+
+가중치 보정: `model_800.pt`를 **평지·0.6 m/s·32 env·20 s**로 재생했다.
+thigh/calf 단위 가중치 −1의 항 합은 −1.9534/에피소드였다. 목표
+`0.015/s × 20 s = 0.3/에피소드`에 맞춰 가중치 **−0.15**를 정했고,
+동일 평가에서 **−0.2930/에피소드**를 재확인했다. hip 항은 기존 계수
+−0.7에서 **−1.9839/에피소드**, 선속도 추종은 +29.6005/에피소드였다.
+두 평가 모두 시간초과율 100%, 평균 전진 거리 12.29 m였다.
+원시 결과: `results/jepa_loco/stair_eval/oracle_current_nominal_unit_flat_s43.json`,
+`results/jepa_loco/stair_eval/oracle_current_nominal_calibrated_flat_s43.json`.
+Isaac 앱 내부 테스트 61개와 OracleCurrent 8 env·1 iteration 스모크가 통과했다.
+
+새 런은 seed 43·2048 env·3000 iteration, 이름 `oracle_current_nominal_s43`으로
+처음부터 학습한다. 비교는 swing 단독 런의 iteration 0~800 곡선과
+동일한 seed·예산에서 한다. iteration 800에 평지 스윙 clearance 평균이
+0.06 m를 넘지 못하면 중단을 검토한다. play 영상 또는 hip 편차에서
+거미 자세가 확인되면 중단한다. iteration 1500에도 stairs_up 첫 단
+통과율이 0이면 학습 계단 5 cm 시작과 평지 워밍업 레벨을 사용자와
+결정한다. 최종 통과는 고정 9 cm 성공 >0, 첫 단 통과율 >0, 평지
+정상 보행을 모두 요구한다. 예상 소요는 Z790 약 9.5시간이며,
+본 학습은 사용자 확인 전까지 시작하지 않는다.
