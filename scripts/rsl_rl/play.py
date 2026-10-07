@@ -20,6 +20,7 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--export", action="store_true", default=False, help="Export the loaded policy to JIT and ONNX.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -133,13 +134,15 @@ def main():
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # export policy
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    try:
-        runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
-        runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
-    except NotImplementedError as e:  # 커스텀 모델(jepa_loco)은 배포 내보내기 미구현
-        print(f"[INFO] export skipped: {e}")
+    # Export is optional: playback itself only needs the inference policy. Some
+    # custom actors use observation groups that the generic exporter cannot trace.
+    if args_cli.export:
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        try:
+            runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
+            runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
+        except NotImplementedError as e:
+            print(f"[INFO] export skipped: {e}")
 
     dt = env.unwrapped.step_dt
 

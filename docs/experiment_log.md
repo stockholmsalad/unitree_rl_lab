@@ -473,3 +473,10 @@ Z790 새 게이트는 최종 200 iteration에서 `stairs_up` 레벨 0, 첫 단 �
 `results/jepa_loco/stair_eval/oracle_current_clearance_s43_fixed_stairs_video/rl-video-step-0.mp4`,
 `results/jepa_loco/stair_eval/oracle_current_path_s42_flattened_scan.json`,
 `results/jepa_loco/stair_eval/oracle_current_clearance_s43_flattened_scan.json`.
+
+**OracleCurrent play 재생 오류 수정 (2026-10-07):** `scripts/rsl_rl/play.py`가
+재생 전에 무조건 ONNX export를 호출해, Oracle의 분리된 actor 관측에서
+`mat1 1x45` 대 `77x512` 입력 차원 오류로 종료됐다. 정책 재생에는 export가
+필요 없으므로 기본 경로에서 건너뛰고 `--export`를 명시할 때만 시도하도록
+바꿨다. Z790에서 동일한 최종 checkpoint를 `--headless --video
+--video_length 10`으로 로드해 10스텝 재생·MP4 생성까지 확인했다.
