@@ -175,6 +175,8 @@ def main():
     peak_front_foot_z = torch.full_like(max_steps, -float("inf"))
     peak_front_foot_x = torch.full_like(max_steps, -float("inf"))
     peak_front_foot_z_settled = torch.full_like(max_steps, -float("inf"))
+    reward_terms = env.unwrapped.reward_manager
+    reward_term_sums = torch.zeros((env.num_envs, len(reward_terms._term_names)), device=env.unwrapped.device)
 
     for step in range(cfg.episode_steps):
         with torch.inference_mode():
@@ -187,6 +189,9 @@ def main():
                 action_obs["terrain_current"] = scan.amax(dim=1, keepdim=True).expand_as(scan)
             actions = policy(action_obs)
             obs, rewards, dones, extras = env.step(actions)
+            reward_term_sums += torch.where(
+                active[:, None], reward_terms._step_reward * env.unwrapped.step_dt, 0.0,
+            )
             if getattr(policy, "is_recurrent", False):
                 policy.reset(dones)
             just_done = active & dones.bool()
@@ -264,6 +269,10 @@ def main():
             "peak_front_foot_z_settled_m_mean": peak_front_foot_z_settled[sel].mean().item(),
             "peak_front_foot_z_settled_m_max": peak_front_foot_z_settled[sel].max().item(),
             "peak_front_foot_x_m_mean": peak_front_foot_x[sel].mean().item(),
+            "reward_term_sum_mean": {
+                term_name: reward_term_sums[sel, i].mean().item()
+                for i, term_name in enumerate(reward_terms._term_names)
+            },
         }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

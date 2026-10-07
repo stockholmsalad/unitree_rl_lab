@@ -119,6 +119,12 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             reward_sums = {
                 name: values[ids].clone() for name, values in self.reward_manager._episode_sums.items()
             }
+            if hasattr(self, "_swing_clearance_sum"):
+                clearance_sum = self._swing_clearance_sum[ids].clone()
+                clearance_count = self._swing_clearance_count[ids].clone()
+                clearance_max = self._swing_clearance_max[ids].clone()
+            else:
+                clearance_sum = clearance_count = clearance_max = None
             cleared = self.episode_obstacle_cleared[ids].clone()
             curriculum_term = self.cfg.curriculum.terrain_levels
             path_qualified = (
@@ -137,6 +143,11 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
                     log[f"Curriculum/path_only_false_promotion_rate/{name}"] = (
                         path_qualified[mask] & ~cleared[mask]
                     ).float().mean()
+                if mask.any() and name in ("flat", "stairs_up") and clearance_sum is not None:
+                    count = clearance_count[mask].sum()
+                    if count > 0:
+                        log[f"Diagnosis/swing_clearance_mean_m/{name}"] = clearance_sum[mask].sum() / count
+                        log[f"Diagnosis/swing_clearance_max_m/{name}"] = clearance_max[mask].amax()
             for label, mask in (("approach_stall", stalled), ("forward_attempt", attempted)):
                 if mask.any():
                     for name, values in reward_sums.items():
@@ -158,6 +169,10 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             self._near_step_stall_consecutive[ids] = 0
             self._near_step_max_outward_speed_mps[ids] = 0.0
             self._swing_foot_z_max_m[ids] = -float("inf")
+            if clearance_sum is not None:
+                self._swing_clearance_sum[ids] = 0.0
+                self._swing_clearance_count[ids] = 0.0
+                self._swing_clearance_max[ids] = -float("inf")
 
     def step(self, action):
         obs, reward, terminated, truncated, extras = super().step(action)

@@ -46,17 +46,22 @@ def test_wide_and_future_cfg_share_scan_grid_and_camera_free():
     assert future.observations.terrain_future.scan.params["horizon_s"] == future.future_horizon_s
 
 
-def test_three_oracles_use_identical_curriculum_rewards_and_commands():
+def test_three_oracles_share_settings_except_current_clearance_reward():
     current, wide, future = OracleCurrentEnvCfg(), OracleWideEnvCfg(), OracleCurrentFutureEnvCfg()
     for cfg in (current, wide, future):
         assert cfg.curriculum.terrain_levels.func is terrain_levels_path
         assert cfg.curriculum.terrain_levels.params == current.curriculum.terrain_levels.params
         assert cfg.scene.terrain.terrain_generator.to_dict() == current.scene.terrain.terrain_generator.to_dict()
         assert cfg.commands.base_velocity.to_dict() == current.commands.base_velocity.to_dict()
-        assert cfg.rewards.to_dict() == current.rewards.to_dict()
         assert cfg.progress.to_dict() == current.progress.to_dict()
         assert cfg.commands.base_velocity.final_ranges.lin_vel_x == (-0.3, 2.0)
         assert cfg.commands.base_velocity.final_ranges.ang_vel_z == (-1.0, 1.0)
+    assert current.rewards.swing_foot_clearance.weight == current.swing_clearance.weight
+    assert not hasattr(wide.rewards, "swing_foot_clearance")
+    assert not hasattr(future.rewards, "swing_foot_clearance")
+    assert wide.rewards.to_dict() == future.rewards.to_dict()
+    for name, term in wide.rewards.to_dict().items():
+        assert current.rewards.to_dict()[name] == term
     runners = (OracleCurrentPPORunnerCfg(), OracleWidePPORunnerCfg(), OracleCurrentFuturePPORunnerCfg())
     for runner in runners[1:]:
         assert runner.num_steps_per_env == runners[0].num_steps_per_env
