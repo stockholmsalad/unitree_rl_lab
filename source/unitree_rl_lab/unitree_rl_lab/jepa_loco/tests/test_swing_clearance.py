@@ -15,14 +15,14 @@ def inputs():
     force = torch.zeros_like(foot)
     air = torch.full((2, 4), 0.1)
     command = torch.tensor([[0.6, 0.0, 0.0]]).repeat(2, 1)
-    body_vel = torch.tensor([[0.2, 0.0, 0.0]]).repeat(2, 1)
+    body_vel = torch.tensor([[0.6, 0.0, 0.0]]).repeat(2, 1)
     return foot, ray, force, air, command, body_vel
 
 
 def evaluate(values):
     return swing_foot_clearance_values(
         *values, target_clearance=0.1, foot_radius=0.022, radius=0.1,
-        contact_threshold=1.0, min_air_time=0.05, v_gate=0.2,
+        contact_threshold=1.0, min_air_time=0.05,
         command_threshold=0.1,
     )
 
@@ -50,6 +50,22 @@ def test_terrain_relative_height_and_motion_gate():
     assert torch.equal(evaluate(values)[0], torch.zeros(2))
     values[4][:, 0] = 0.6
     values[5][:, :2] = 0.0
+    assert torch.equal(evaluate(values)[0], torch.zeros(2))
+
+
+def test_command_relative_directional_progress_gate():
+    values = inputs()  # [0.6, 0, 0] 명령, 모든 발 점수 1
+    assert torch.allclose(evaluate(values)[0], torch.ones(2))
+    values[5][:, :2] = torch.tensor([0.3, 0.0])
+    assert torch.allclose(evaluate(values)[0], torch.full((2,), 0.5))
+    values[5][:, :2] = torch.tensor([-0.3, 0.0])
+    assert torch.equal(evaluate(values)[0], torch.zeros(2))
+    values[5][:, :2] = torch.tensor([0.0, 0.6])
+    assert torch.equal(evaluate(values)[0], torch.zeros(2))
+    values[4][:, :2] = torch.tensor([0.0, 0.4])
+    values[5][:, :2] = torch.tensor([0.0, 0.4])
+    assert torch.allclose(evaluate(values)[0], torch.ones(2))
+    values[4][:, :2] = torch.tensor([0.05, 0.0])
     assert torch.equal(evaluate(values)[0], torch.zeros(2))
 
 

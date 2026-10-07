@@ -11,14 +11,13 @@ def swing_foot_clearance_values(
     contact_force_w: torch.Tensor,
     air_time: torch.Tensor,
     command: torch.Tensor,
-    body_vel_w: torch.Tensor,
+    body_vel_b: torch.Tensor,
     *,
     target_clearance: float,
     foot_radius: float,
     radius: float,
     contact_threshold: float,
     min_air_time: float,
-    v_gate: float,
     command_threshold: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return [N] reward, [N,4] terrain-relative clearance, [N,4] valid swing mask."""
@@ -26,10 +25,10 @@ def swing_foot_clearance_values(
     if (feet != 4 or xyz != 3 or ray_hits_w.ndim != 3 or ray_hits_w.shape[0] != n
             or ray_hits_w.shape[-1] != 3 or contact_force_w.shape != (n, 4, 3)
             or air_time.shape != (n, 4) or command.shape != (n, 3)
-            or body_vel_w.shape != (n, 3)):
+            or body_vel_b.shape != (n, 3)):
         raise ValueError("발 [N,4,3], ray [N,R,3], force [N,4,3], air [N,4], command/velocity [N,3] 필요")
-    if target_clearance <= 0 or radius <= 0 or v_gate <= 0 or foot_radius < 0:
-        raise ValueError("target_clearance, radius, v_gate는 양수이고 foot_radius는 0 이상이어야 한다")
+    if target_clearance <= 0 or radius <= 0 or foot_radius < 0 or command_threshold < 0:
+        raise ValueError("target_clearance와 radius는 양수, foot_radius와 command_threshold는 0 이상이어야 한다")
 
     finite_hit = torch.isfinite(ray_hits_w).all(dim=-1)
     xy_distance_sq = ((ray_hits_w[:, None, :, :2] - foot_pos_w[:, :, None, :2]) ** 2).sum(dim=-1)
@@ -41,9 +40,16 @@ def swing_foot_clearance_values(
     swing = (torch.linalg.vector_norm(contact_force_w, dim=-1) < contact_threshold) & (air_time > min_air_time)
     valid_swing = valid & swing
     foot_score = torch.where(valid_swing, (clearance / target_clearance).clamp(0.0, 1.0), 0.0)
-    command_active = torch.linalg.vector_norm(command[:, :2], dim=-1) > command_threshold
-    speed_gate = (torch.linalg.vector_norm(body_vel_w[:, :2], dim=-1) / v_gate).clamp(0.0, 1.0)
-    reward = command_active.float() * speed_gate * foot_score.mean(dim=-1)
+    command_xy = command[:, :2]
+    command_sq = (command_xy**2).sum(dim=-1)
+    command_active = command_sq > command_threshold**2
+    # Both vectors are in the body frame. The inactive denominator is set to one
+    # before division so a zero command cannot create NaN.
+    progress = (body_vel_b[:, :2] * command_xy).sum(dim=-1) / torch.where(
+        command_active, command_sq, torch.ones_like(command_sq),
+    )
+    gate = torch.where(command_active, progress.clamp(0.0, 1.0), 0.0)
+    reward = gate * foot_score.mean(dim=-1)
     return reward, clearance, valid_swing
 
 
@@ -58,7 +64,6 @@ def swing_foot_clearance(
     radius: float,
     contact_threshold: float,
     min_air_time: float,
-    v_gate: float,
     command_threshold: float,
 ) -> torch.Tensor:
     """Isaac reward-manager adapter; cache matching foot IDs and episode diagnostics."""
@@ -83,13 +88,12 @@ def swing_foot_clearance(
         contact.data.net_forces_w[:, ids],
         contact.data.current_air_time[:, ids],
         env.command_manager.get_command(command_name),
-        robot.data.root_lin_vel_w,
+        robot.data.root_lin_vel_b,
         target_clearance=target_clearance,
         foot_radius=foot_radius,
         radius=radius,
         contact_threshold=contact_threshold,
         min_air_time=min_air_time,
-        v_gate=v_gate,
         command_threshold=command_threshold,
     )
     env._swing_clearance_sum += torch.where(valid_swing, clearance, 0.0).sum(dim=1)

@@ -62,15 +62,17 @@ class OracleSwingClearanceCfg:
     radius: float = 0.10
     contact_threshold: float = 1.0
     min_air_time: float = 0.05
-    v_gate: float = 0.2
     command_threshold: float = 0.1
-    weight: float = 10.0
+    # 20 s, dt=0.02, two swing feet: <= 0.5 * weight * 0.02 * 1000 = 10*weight.
+    # All four feet in swing give the absolute bound 20*weight; weight=1 is below
+    # the linear tracking term's 20 s maximum of 30 under the trot assumption.
+    weight: float = 1.0
 
 
 @configclass
 class OracleCurrentRewardsCfg(JepaRewardsCfg):
     swing_foot_clearance = RewTerm(
-        func=swing_foot_clearance, weight=10.0,
+        func=swing_foot_clearance, weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
@@ -78,7 +80,7 @@ class OracleCurrentRewardsCfg(JepaRewardsCfg):
             "command_name": "base_velocity",
             "target_clearance": 0.10, "foot_radius": 0.022, "radius": 0.10,
             "contact_threshold": 1.0, "min_air_time": 0.05,
-            "v_gate": 0.2, "command_threshold": 0.1,
+            "command_threshold": 0.1,
         },
     )
 
@@ -100,7 +102,7 @@ class OracleCurrentEnvCfg(JepaBlindEnvCfg):
         reward = self.rewards.swing_foot_clearance
         reward.weight = self.swing_clearance.weight
         for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
-                    "min_air_time", "v_gate", "command_threshold"):
+                    "min_air_time", "command_threshold"):
             reward.params[key] = getattr(self.swing_clearance, key)
 
 
@@ -119,7 +121,7 @@ class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
         reward = self.rewards.swing_foot_clearance
         reward.weight = self.swing_clearance.weight
         for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
-                    "min_air_time", "v_gate", "command_threshold"):
+                    "min_air_time", "command_threshold"):
             reward.params[key] = getattr(self.swing_clearance, key)
 
 
