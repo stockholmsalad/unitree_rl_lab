@@ -25,7 +25,11 @@ parser.add_argument("--spawn_forward_m", type=float, default=None)
 parser.add_argument("--episode_steps", type=int, default=None)
 parser.add_argument("--envs_per_height", type=int, default=None)
 parser.add_argument("--seed", type=int, default=None)
+parser.add_argument("--low_step_height_m", type=float, default=None)
+parser.add_argument("--high_step_height_m", type=float, default=None)
 parser.add_argument("--video", action="store_true", help="고정 지형 평가 env 0의 영상을 저장한다.")
+parser.add_argument("--probe_terrain", action="store_true", help="현재 heightscan을 평탄하게 바꿨을 때 행동 변화를 기록한다.")
+parser.add_argument("--flatten_terrain_input", action="store_true", help="정책 입력 heightscan의 지형 높이 차이를 제거한다.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if args.video:
@@ -100,6 +104,12 @@ def main():
         cfg.envs_per_height = args.envs_per_height
     if args.seed is not None:
         cfg.seed = args.seed
+    if args.low_step_height_m is not None:
+        cfg.low_step_height_m = args.low_step_height_m
+    if args.high_step_height_m is not None:
+        cfg.high_step_height_m = args.high_step_height_m
+    if cfg.low_step_height_m <= 0 or cfg.high_step_height_m <= cfg.low_step_height_m:
+        raise ValueError("계단 높이는 0보다 크고 low < high여야 한다")
     env_cfg = make_eval_env_cfg(args.task, cfg)
     agent_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
     import importlib.metadata as metadata
@@ -168,7 +178,14 @@ def main():
 
     for step in range(cfg.episode_steps):
         with torch.inference_mode():
-            actions = policy(obs)
+            action_obs = obs
+            if args.flatten_terrain_input:
+                if "terrain_current" not in obs:
+                    raise ValueError("terrain_current가 없는 정책에는 heightscan 평탄화를 사용할 수 없다")
+                action_obs = obs.clone()
+                scan = action_obs["terrain_current"]
+                action_obs["terrain_current"] = scan.amax(dim=1, keepdim=True).expand_as(scan)
+            actions = policy(action_obs)
             obs, rewards, dones, extras = env.step(actions)
             if getattr(policy, "is_recurrent", False):
                 policy.reset(dones)
@@ -195,6 +212,13 @@ def main():
             if (step % cfg.trace_interval_steps == 0 or step == cfg.episode_steps - 1) and active.any():
                 reward_terms = env.unwrapped.reward_manager
                 terrain_scan = obs["terrain_current"][active] if "terrain_current" in obs else None
+                terrain_action_delta = None
+                if args.probe_terrain and terrain_scan is not None:
+                    probe_obs = obs.clone()
+                    scan = probe_obs["terrain_current"]
+                    probe_obs["terrain_current"] = scan.amax(dim=1, keepdim=True).expand_as(scan)
+                    probe_actions = policy(probe_obs)
+                    terrain_action_delta = (policy(obs)[active] - probe_actions[active]).abs().mean().item()
                 trace.append({"step": step + 1,
                               "forward_m_mean": forward[active].mean().item(),
                               "forward_m_min": forward[active].min().item(),
@@ -208,11 +232,13 @@ def main():
                               "terrain_scan_min": None if terrain_scan is None else terrain_scan.min().item(),
                               "terrain_scan_max": None if terrain_scan is None else terrain_scan.max().item(),
                               "terrain_scan_std": None if terrain_scan is None else terrain_scan.float().std(unbiased=False).item(),
+                              "terrain_action_delta_abs_mean": terrain_action_delta,
                               "reward_terms_per_s": {name: reward_terms._step_reward[active, i].mean().item()
                                                      for i, name in enumerate(reward_terms._term_names)},
                               "active_rate": active.float().mean().item()})
 
     report = {"task": args.task, "terrain": args.terrain, "checkpoint": str(Path(args.checkpoint).resolve()),
+              "flatten_terrain_input": args.flatten_terrain_input,
               "initial_terrain_scan": initial_terrain_scan, "initial_scan_geometry": initial_scan_geometry,
               "command_mps": cfg.forward_command_mps, "observed_command": command_sample,
               "spawn_forward_m": cfg.spawn_forward_m, "episode_steps": cfg.episode_steps,

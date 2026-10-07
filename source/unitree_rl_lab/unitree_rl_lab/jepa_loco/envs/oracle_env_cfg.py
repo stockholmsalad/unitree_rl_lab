@@ -31,7 +31,7 @@ class OraclePathCurriculumCfg:
 class OracleProgressCfg:
     clearance_margin_m: float = 0.1
     clearance_hold_steps: int = 10
-    stair_approach_margin_m: float = 0.25
+    stair_approach_margin_m: float = 0.4
     first_step_progress_margin_m: float = 0.05
     stall_speed_mps: float = 0.1
     stall_hold_steps: int = 50
