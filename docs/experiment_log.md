@@ -647,7 +647,9 @@ Isaac 앱 내부 전체 테스트 **67개 통과**와 신규 task 8 env·1 itera
 `episode_count=2`, `warmup_path_only=1`, `first_tread_attempt_rate=0`이고
 실제 장애물 통과율과 첫 단 전진율은 기록되지 않았다. 생성 메시 단위
 테스트는 행 0·1의 z 범위가 0이고, 행 9와 행 2의 계단 높이 비가 4임을
-확인했다. 8 env·1 iteration은 레벨 2 성능을 검증하지 않는다.
+확인했다. 아직 도달하지 않은 레벨 2는 `episode_count=0`으로 기록하고
+시도율은 기록하지 않으므로, 미노출과 시도 실패를 구분할 수 있다.
+8 env·1 iteration은 레벨 2 성능을 검증하지 않는다.
 
 **사전 조기 판정:** iteration 500 부근 레벨 2(5 cm) stairs_up의 시도율>0,
 통과율=0이면 즉시 중단하고 종료 사유와 접촉 body를 조사한다. 시도율=0이면

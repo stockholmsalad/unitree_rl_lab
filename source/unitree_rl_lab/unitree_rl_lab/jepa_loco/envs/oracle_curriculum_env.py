@@ -186,10 +186,10 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
                 if name in ("stairs_up", "stairs_down"):
                     for level in range(self.cfg.scene.terrain.terrain_generator.num_rows):
                         at_level = mask & (levels == level)
-                        if not at_level.any():
-                            continue
                         prefix = f"Diagnosis/{name}/level_{level}"
                         log[f"{prefix}/episode_count"] = at_level.sum()
+                        if not at_level.any():
+                            continue
                         log[f"{prefix}/first_tread_attempt_rate"] = first_tread_attempt[at_level].float().mean()
                         if level >= self.cfg.progress.warmup_levels:
                             log[f"{prefix}/obstacle_clear_rate"] = cleared[at_level].float().mean()
