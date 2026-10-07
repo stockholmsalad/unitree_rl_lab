@@ -480,3 +480,23 @@ Z790 새 게이트는 최종 200 iteration에서 `stairs_up` 레벨 0, 첫 단 �
 필요 없으므로 기본 경로에서 건너뛰고 `--export`를 명시할 때만 시도하도록
 바꿨다. Z790에서 동일한 최종 checkpoint를 `--headless --video
 --video_length 10`으로 로드해 10스텝 재생·MP4 생성까지 확인했다.
+
+**OracleCurrent 지형 기준 스윙 발 높이 보상 준비 (2026-10-07):** 사용자가
+기존 조건의 다른 항목은 그대로 두고 스윙 높이 보상 하나만 추가하는 실험을
+확정했다. `jepa_loco/envs/rewards.py`에 발밑 유효 ray의 최고 지형 높이를
+사용하는 순수 텐서 계산과 Isaac reward-manager 연결을 구현했다. 네 발 중
+비접촉·air time 0.05 s 초과인 발만 점수를 얻고, 명령과 실제 몸통 이동
+속도 게이트를 곱한다. OracleCurrent에만 켰으며 Wide·Current+Future는
+아직 기존 보상이다. Current 통과 후 세 oracle 비교를 할 때 보상을 맞춘다.
+
+가중치 보정에는 이전 seed 43 최종 checkpoint를 **평지·0.6 m/s·32 env·20 s**로
+재생해 정상 보행 정책의 값을 썼다. 새 항의 가중치 1 에피소드 합은 +0.3948,
+기존 `joint_pos`는 −3.6271, 시간초과율 100%, 평균 전진 거리 12.13 m였다.
+따라서 configclass 가중치를 10으로 정했다. 고정 정책에서 예상 새 항 합은
++3.95로, joint_pos 크기와 비슷하다. 원시 측정은
+`results/jepa_loco/stair_eval/oracle_current_swing_calibration_flat_w1.json`.
+Isaac 앱 내부 테스트 57개, OracleCurrent 8 env·1 iteration 스모크가 통과했다.
+추가로 seed 43·128 env·30 iteration을 처음부터 실행해 보상과 지형별
+clearance 로깅을 확인했다. 마지막 로그의 스윙 clearance 평균은 flat
+0.0445 m, stairs_up 0.0440 m였다. 이는 초기 학습 확인이며 등반 성공
+판정에 쓰지 않는다. 본 학습은 아직 시작하지 않았다.
