@@ -21,6 +21,10 @@ class StairEvalCfg:
     seed: int = 42
     trace_interval_steps: int = 100
     settle_steps: int = 50
+    contact_probe_margin_m: float = 0.4
+    contact_probe_foot_x_margin_m: float = 0.02
+    contact_probe_force_threshold_n: float = 1.0
+    contact_probe_steps: int = 4
     viewer_eye: tuple[float, float, float] = (-2.0, 2.5, 1.2)
     viewer_lookat: tuple[float, float, float] = (1.2, 0.0, 0.3)
     viewer_env_index: int = 0

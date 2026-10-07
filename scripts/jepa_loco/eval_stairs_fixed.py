@@ -15,6 +15,7 @@ parser.add_argument("--task", choices=(
     "Unitree-Go2-JepaLoco-DepthGRU",
     "Unitree-Go2-JepaLoco-BlindGRU",
     "Unitree-Go2-JepaLoco-OracleCurrent",
+    "Unitree-Go2-JepaLoco-OracleCurrent-EasyStart",
     "Unitree-Go2-JepaLoco-OracleWide",
     "Unitree-Go2-JepaLoco-OracleCurrentFuture",
 ), required=True)
@@ -30,6 +31,7 @@ parser.add_argument("--high_step_height_m", type=float, default=None)
 parser.add_argument("--video", action="store_true", help="고정 지형 평가 env 0의 영상을 저장한다.")
 parser.add_argument("--probe_terrain", action="store_true", help="현재 heightscan을 평탄하게 바꿨을 때 행동 변화를 기록한다.")
 parser.add_argument("--flatten_terrain_input", action="store_true", help="정책 입력 heightscan의 지형 높이 차이를 제거한다.")
+parser.add_argument("--contact_diagnostics", action="store_true", help="첫 단 부근 종료 사유·접촉 body·스텝 보상을 기록한다.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if args.video:
@@ -177,8 +179,44 @@ def main():
     peak_front_foot_z_settled = torch.full_like(max_steps, -float("inf"))
     reward_terms = env.unwrapped.reward_manager
     reward_term_sums = torch.zeros((env.num_envs, len(reward_terms._term_names)), device=env.unwrapped.device)
+    contact_diagnostics = {"near_step_terminations": [], "first_contact_traces": []}
+    if args.contact_diagnostics and args.terrain == "stairs":
+        contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
+        contact_ids, contact_names = contact_sensor.find_bodies(".*")
+        front_contact_ids = [idx for idx, name in zip(contact_ids, contact_names) if name.startswith("F") and name.endswith("_foot")]
+        term_manager = env.unwrapped.termination_manager
+        original_reset_idx = env.unwrapped._reset_idx
+
+        def capture_reset(env_ids):
+            ids = torch.as_tensor(env_ids, device=env.unwrapped.device, dtype=torch.long)
+            root_x = (robot.data.root_pos_w[ids, 0] - origin[ids, 0]).abs()
+            for env_id, distance in zip(ids.tolist(), root_x.tolist()):
+                if abs(distance - first_riser) > cfg.contact_probe_margin_m:
+                    continue
+                force = contact_sensor.data.net_forces_w[env_id, contact_ids].norm(dim=-1)
+                recent_force = contact_sensor.data.net_forces_w_history[env_id, :, contact_ids].norm(dim=-1).amax(dim=0)
+                contact_diagnostics["near_step_terminations"].append({
+                    "env_id": env_id, "step": int(step_index[0]), "height_m": heights[env_id].item(),
+                    "body_x_m": distance, "termination_reasons": [
+                        name for name in term_manager.active_terms if term_manager.get_term(name)[env_id].item()
+                    ],
+                    "contact_bodies": [name for name, value in zip(contact_names, force.tolist())
+                                       if value > cfg.contact_probe_force_threshold_n],
+                    "contact_bodies_recent": [name for name, value in zip(contact_names, recent_force.tolist())
+                                              if value > cfg.contact_probe_force_threshold_n],
+                    "reward_step": {name: (reward_terms._step_reward[env_id, i] * env.unwrapped.step_dt).item()
+                                    for i, name in enumerate(reward_terms._term_names)},
+                })
+            return original_reset_idx(env_ids)
+
+        env.unwrapped._reset_idx = capture_reset
+        step_index = [0]
+        contact_trace_started = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
+        contact_trace_remaining = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.long)
 
     for step in range(cfg.episode_steps):
+        if args.contact_diagnostics and args.terrain == "stairs":
+            step_index[0] = step + 1
         with torch.inference_mode():
             action_obs = obs
             if args.flatten_terrain_input:
@@ -208,6 +246,28 @@ def main():
             front_x = (robot.data.body_pos_w[:, front_foot_ids, 0] - origin[:, None, 0]).amax(dim=1)
             peak_front_foot_z = torch.where(still_active, torch.maximum(peak_front_foot_z, front_z), peak_front_foot_z)
             peak_front_foot_x = torch.where(still_active, torch.maximum(peak_front_foot_x, front_x), peak_front_foot_x)
+            if args.contact_diagnostics and args.terrain == "stairs":
+                front_force = contact_sensor.data.net_forces_w[:, front_contact_ids].norm(dim=-1).amax(dim=1)
+                start_trace = still_active & ~contact_trace_started & (
+                    (front_x >= first_riser - cfg.contact_probe_foot_x_margin_m)
+                    & (front_x <= first_riser + cfg.contact_probe_margin_m)
+                ) & (front_force > cfg.contact_probe_force_threshold_n)
+                contact_trace_started |= start_trace
+                contact_trace_remaining = torch.where(start_trace, cfg.contact_probe_steps, contact_trace_remaining)
+                for env_id in torch.nonzero(still_active & (contact_trace_remaining > 0), as_tuple=True)[0].tolist():
+                    force = contact_sensor.data.net_forces_w[env_id, contact_ids].norm(dim=-1)
+                    recent_force = contact_sensor.data.net_forces_w_history[env_id, :, contact_ids].norm(dim=-1).amax(dim=0)
+                    contact_diagnostics["first_contact_traces"].append({
+                        "env_id": env_id, "step": step + 1, "height_m": heights[env_id].item(),
+                        "body_x_m": forward[env_id].item(), "front_foot_x_m": front_x[env_id].item(),
+                        "contact_bodies": [name for name, value in zip(contact_names, force.tolist())
+                                           if value > cfg.contact_probe_force_threshold_n],
+                        "contact_bodies_recent": [name for name, value in zip(contact_names, recent_force.tolist())
+                                                  if value > cfg.contact_probe_force_threshold_n],
+                        "reward_step": {name: (reward_terms._step_reward[env_id, i] * env.unwrapped.step_dt).item()
+                                        for i, name in enumerate(reward_terms._term_names)},
+                    })
+                contact_trace_remaining = torch.where(still_active, (contact_trace_remaining - 1).clamp(min=0), 0)
             if step >= cfg.settle_steps:
                 peak_front_foot_z_settled = torch.where(still_active, torch.maximum(peak_front_foot_z_settled, front_z), peak_front_foot_z_settled)
             min_body_drop = torch.where(still_active, torch.minimum(min_body_drop, progress), min_body_drop)
@@ -250,7 +310,8 @@ def main():
               "stair_count": count, "first_riser_m": first_riser, "top_edge_m": top_edge, "success_rule":
               None if args.terrain == "flat" else
               f"body gain >= {cfg.top_height_fraction} * {count} * step height and forward x >= {top_edge-cfg.top_position_margin_m:.2f} m for {cfg.hold_steps} steps",
-              "groups": {}, "trace": trace, "foot_names": foot_names}
+              "groups": {}, "trace": trace, "foot_names": foot_names,
+              "contact_diagnostics": contact_diagnostics if args.contact_diagnostics else None}
     selections = (("flat", torch.ones_like(active)),) if args.terrain == "flat" else (
         ("low", heights == cfg.low_step_height_m), ("high", heights == cfg.high_step_height_m))
     for name, sel in selections:
