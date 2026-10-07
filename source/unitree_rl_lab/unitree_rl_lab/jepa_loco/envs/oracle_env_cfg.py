@@ -19,7 +19,7 @@ from .blind_env_cfg import BlindObservationsCfg, BlindSceneCfg, JepaBlindEnvCfg,
 from .depth_env_cfg import JepaRewardsCfg
 from .oracle_heightmap import future_height_scan
 from .path_curriculum import terrain_levels_path
-from .rewards import swing_foot_clearance
+from .rewards import nominal_pose_hip, nominal_pose_thigh_calf, swing_foot_clearance
 
 
 @configclass
@@ -70,7 +70,39 @@ class OracleSwingClearanceCfg:
 
 
 @configclass
+class OracleNominalPoseCfg:
+    hip_joint_regex: str = ".*_hip_joint"
+    thigh_joint_regex: str = ".*_thigh_joint"
+    calf_joint_regex: str = ".*_calf_joint"
+    hip_weight: float = -0.7
+    thigh_calf_weight: float = -0.15  # model_800 평지 평가: 단위항 -1.953/20 s → -0.293/20 s
+    stand_still_scale: float = 5.0
+    velocity_threshold: float = 0.3
+    normalization: str = "command_xy_sq_floor"
+    normalization_floor: float = 1.0
+
+
+@configclass
 class OracleCurrentRewardsCfg(JepaRewardsCfg):
+    joint_pos = None
+    nominal_hip = RewTerm(
+        func=nominal_pose_hip, weight=-0.7,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=".*_hip_joint"),
+            "command_name": "base_velocity", "stand_still_scale": 5.0,
+            "velocity_threshold": 0.3, "normalization": "command_xy_sq_floor",
+            "normalization_floor": 1.0,
+        },
+    )
+    nominal_thigh_calf = RewTerm(
+        func=nominal_pose_thigh_calf, weight=-0.15,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_thigh_joint", ".*_calf_joint"]),
+            "command_name": "base_velocity", "stand_still_scale": 5.0,
+            "velocity_threshold": 0.3, "normalization": "command_xy_sq_floor",
+            "normalization_floor": 1.0,
+        },
+    )
     swing_foot_clearance = RewTerm(
         func=swing_foot_clearance, weight=1.0,
         params={
@@ -85,6 +117,25 @@ class OracleCurrentRewardsCfg(JepaRewardsCfg):
     )
 
 
+def configure_current_rewards(cfg):
+    swing = cfg.rewards.swing_foot_clearance
+    swing.weight = cfg.swing_clearance.weight
+    for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
+                "min_air_time", "command_threshold"):
+        swing.params[key] = getattr(cfg.swing_clearance, key)
+    nominal = cfg.nominal_pose
+    for name, weight, joint_names in (
+        ("nominal_hip", nominal.hip_weight, nominal.hip_joint_regex),
+        ("nominal_thigh_calf", nominal.thigh_calf_weight,
+         [nominal.thigh_joint_regex, nominal.calf_joint_regex]),
+    ):
+        term = getattr(cfg.rewards, name)
+        term.weight = weight
+        term.params["asset_cfg"].joint_names = joint_names
+        for key in ("stand_still_scale", "velocity_threshold", "normalization", "normalization_floor"):
+            term.params[key] = getattr(nominal, key)
+
+
 @configclass
 class OracleCurrentEnvCfg(JepaBlindEnvCfg):
     scene: BlindSceneCfg = BlindSceneCfg(num_envs=1024, env_spacing=2.5)
@@ -93,17 +144,14 @@ class OracleCurrentEnvCfg(JepaBlindEnvCfg):
     curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
     progress: OracleProgressCfg = OracleProgressCfg()
     swing_clearance: OracleSwingClearanceCfg = OracleSwingClearanceCfg()
+    nominal_pose: OracleNominalPoseCfg = OracleNominalPoseCfg()
     terrain_column_assignment_eps: float = 0.001
 
     def __post_init__(self):
         super().__post_init__()
         if not hasattr(self.rewards, "swing_foot_clearance"):
             return
-        reward = self.rewards.swing_foot_clearance
-        reward.weight = self.swing_clearance.weight
-        for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
-                    "min_air_time", "command_threshold"):
-            reward.params[key] = getattr(self.swing_clearance, key)
+        configure_current_rewards(self)
 
 
 @configclass
@@ -114,15 +162,12 @@ class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
     curriculum: OraclePathCurriculumCfg = OraclePathCurriculumCfg()
     progress: OracleProgressCfg = OracleProgressCfg()
     swing_clearance: OracleSwingClearanceCfg = OracleSwingClearanceCfg()
+    nominal_pose: OracleNominalPoseCfg = OracleNominalPoseCfg()
     terrain_column_assignment_eps: float = 0.001
 
     def __post_init__(self):
         super().__post_init__()
-        reward = self.rewards.swing_foot_clearance
-        reward.weight = self.swing_clearance.weight
-        for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
-                    "min_air_time", "command_threshold"):
-            reward.params[key] = getattr(self.swing_clearance, key)
+        configure_current_rewards(self)
 
 
 @configclass

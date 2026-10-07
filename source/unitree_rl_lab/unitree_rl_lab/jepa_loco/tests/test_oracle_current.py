@@ -57,10 +57,15 @@ def test_three_oracles_share_settings_except_current_clearance_reward():
         assert cfg.commands.base_velocity.final_ranges.lin_vel_x == (-0.3, 2.0)
         assert cfg.commands.base_velocity.final_ranges.ang_vel_z == (-1.0, 1.0)
     assert current.rewards.swing_foot_clearance.weight == current.swing_clearance.weight
+    assert current.rewards.joint_pos is None
+    assert current.rewards.nominal_hip.weight == current.nominal_pose.hip_weight
+    assert current.rewards.nominal_thigh_calf.weight == current.nominal_pose.thigh_calf_weight
     assert not hasattr(wide.rewards, "swing_foot_clearance")
     assert not hasattr(future.rewards, "swing_foot_clearance")
     assert wide.rewards.to_dict() == future.rewards.to_dict()
     for name, term in wide.rewards.to_dict().items():
+        if name == "joint_pos":
+            continue
         assert current.rewards.to_dict()[name] == term
     runners = (OracleCurrentPPORunnerCfg(), OracleWidePPORunnerCfg(), OracleCurrentFuturePPORunnerCfg())
     for runner in runners[1:]:

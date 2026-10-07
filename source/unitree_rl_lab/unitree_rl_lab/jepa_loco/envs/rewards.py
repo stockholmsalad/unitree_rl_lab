@@ -5,6 +5,73 @@ from __future__ import annotations
 import torch
 
 
+def nominal_pose_penalty_values(
+    joint_pos: torch.Tensor,
+    default_joint_pos: torch.Tensor,
+    command: torch.Tensor,
+    body_vel_b: torch.Tensor,
+    *,
+    group: str,
+    stand_still_scale: float,
+    velocity_threshold: float,
+    normalization: str,
+    normalization_floor: float,
+) -> torch.Tensor:
+    """Hip L2 norm or thigh/calf squared error, with the original stillness rule."""
+    n = joint_pos.shape[0]
+    if (joint_pos.ndim != 2 or default_joint_pos.shape != joint_pos.shape
+            or command.shape != (n, 3) or body_vel_b.shape != (n, 3)):
+        raise ValueError("joint/default [N,J], command/body velocity [N,3] 필요")
+    if stand_still_scale < 0 or velocity_threshold < 0 or normalization_floor <= 0:
+        raise ValueError("stand_still_scale/velocity_threshold는 음수가 아니고 normalization_floor는 양수여야 한다")
+    delta = joint_pos - default_joint_pos
+    if group == "hip":
+        penalty = torch.linalg.vector_norm(delta, dim=1)
+    elif group == "thigh_calf":
+        if normalization != "command_xy_sq_floor":
+            raise ValueError(f"지원하지 않는 정규화 방식: {normalization}")
+        command_xy_sq = (command[:, :2] ** 2).sum(dim=1)
+        penalty = delta.square().sum(dim=1) / torch.maximum(
+            command_xy_sq, torch.full_like(command_xy_sq, normalization_floor)
+        )
+    else:
+        raise ValueError(f"지원하지 않는 관절 그룹: {group}")
+    moving = (torch.linalg.vector_norm(command, dim=1) > 0) | (
+        torch.linalg.vector_norm(body_vel_b[:, :2], dim=1) > velocity_threshold
+    )
+    return torch.where(moving, penalty, stand_still_scale * penalty)
+
+
+def nominal_pose_hip(
+    env, asset_cfg, command_name: str, stand_still_scale: float,
+    velocity_threshold: float, normalization: str, normalization_floor: float,
+) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    ids = asset_cfg.joint_ids
+    return nominal_pose_penalty_values(
+        robot.data.joint_pos[:, ids], robot.data.default_joint_pos[:, ids],
+        env.command_manager.get_command(command_name), robot.data.root_lin_vel_b,
+        group="hip", stand_still_scale=stand_still_scale,
+        velocity_threshold=velocity_threshold, normalization=normalization,
+        normalization_floor=normalization_floor,
+    )
+
+
+def nominal_pose_thigh_calf(
+    env, asset_cfg, command_name: str, stand_still_scale: float,
+    velocity_threshold: float, normalization: str, normalization_floor: float,
+) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    ids = asset_cfg.joint_ids
+    return nominal_pose_penalty_values(
+        robot.data.joint_pos[:, ids], robot.data.default_joint_pos[:, ids],
+        env.command_manager.get_command(command_name), robot.data.root_lin_vel_b,
+        group="thigh_calf", stand_still_scale=stand_still_scale,
+        velocity_threshold=velocity_threshold, normalization=normalization,
+        normalization_floor=normalization_floor,
+    )
+
+
 def swing_foot_clearance_values(
     foot_pos_w: torch.Tensor,
     ray_hits_w: torch.Tensor,
