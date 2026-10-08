@@ -817,3 +817,42 @@ Z790 **약 10~24 h**의 보수적 범위로 제시하고 사용자 확인을 받
 입증이 아니라 이 전제의 초기 확인이다. 학습 중 레벨별 첫 단 통과율,
 첫 통과 iteration, play 영상도 함께 확인한다. 최종 비교에는 조건당
 3개 이상 seed 규칙을 유지한다.
+
+## 2026-10-08 — Current+Future gap 관측 NaN 수정
+
+Z790의 `oracle_future_easystart_s43` 본 학습이 **iteration 22**에서
+`terrain_future` 관측 NaN으로 중단됐다 (`~/oracle_future_easystart_s43.log`).
+pilab의 `oracle_future_easystart_s42`도 같은 결함 가능성 때문에 사용자에
+의해 중단됐다. **두 런은 성능 비교에 사용하지 않고, 수정 후 seed별로
+처음부터 재시작한다.**
+
+원인은 gap의 ray miss에서 `wide_height_scanner.ray_hits_w[...,2]=inf`가
+나오고 `pos_z−hit_z−offset=−inf`가 된 데 있다. Current heightscan은
+보간이 없어 관측 clip이 이를 −1로 만들지만, Future는 bilinear
+`grid_sample`에 `−inf`를 먼저 넣어 NaN을 만들었다. 이후 관측 clip은
+NaN을 제거하지 못했다. `future_height_scan`에서 보간 전에 wide 값을
+관측 clip 범위로 정리한다: `−inf→lo`, `+inf→hi`, `NaN→lo`, 유한값도
+`[lo,hi]`로 clip한다. `terrain_future.scan.clip`을 보간 전
+`clip_range`에도 전달하고 런타임에 불일치하면 오류를 낸다. 같은 함수를
+쓰는 기존 `OracleCurrentFuture` task에도 이 수정이 적용된다.
+
+순수 함수/관측 테스트에서는 `−inf/+inf/NaN`이 섞인 187점 미래 패치가
+전부 유한하고 [−1,1] 안에 있음을 확인했다. horizon 0·명령 0에서
+미래 패치가 같은 위치의 clip 후 Current 패치와 일치하며, 두 clip
+설정 불일치는 실패한다. Isaac 앱 내부 전체 테스트 **75개 통과**.
+
+gap만 생성하도록 다섯 지형 종류의 비율을 `gap=1`, 나머지 0으로
+오버라이드하고 `max_init_terrain_level=2`에서 **64 env·30 iteration**
+학습 스모크를 실행했다 (Z790 seed 43, `oracle_future_gap_smoke`).
+30/30 iteration이 NaN 없이 끝났고 `model_29.pt`가 저장됐다.
+동일 조건의 실제 RayCaster 프로브에서는 64 env 중 gap 레벨 2가
+**15개**, 이들의 원시 wide hit 중 비유한 ray가 **1,237개**였다.
+최대 전진 명령 2.0 m/s로 미래 패치를 gap 쪽으로 옮기면 수정 전
+보간은 그 15개 env에서 **NaN 334개**를 만들고, 수정 후 값은 모두
+유한하며 범위 [−1,−0.10] 안이었다. 따라서 스모크가 실제 gap
+미충돌 광선 조건을 포함했고, 이전 실패의 보간 경로도 재현했다.
+
+2048 env·3000 iteration 본 학습은 시작하지 않았다. 수정 뒤 신규
+run_name은 seed 43(Z790) `oracle_future_easystart_s43`, seed 42(pilab)
+`oracle_future_easystart_s42`를 사용할 수 있으나, 기존 중단 런과
+구분되도록 새 타임스탬프의 로그 디렉터리에서 처음부터 실행한다.

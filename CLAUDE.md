@@ -76,6 +76,13 @@
   0.050 m이므로 범위 검사를 테스트로 유지한다. 현재 구현의 범위 밖
   `grid_sample(padding_mode="border")`는 경계값으로 채우지만 확정 명령
   범위에서는 사용되지 않는다. wide 크기와 horizon은 바꾸지 않는다.
+- **2026-10-08 gap 광선 보정:** RayCaster가 gap에서 `inf` hit를 반환할 수
+  있으므로, 미래 패치 bilinear 보간 **전에** wide height 값을
+  `terrain_future` 관측의 clip 범위(현재 −1~1)에 맞춰 유한값으로 만든다.
+  `−inf→하한`, `+inf→상한`, `NaN→하한`이며 유한값도 같은 범위로
+  clip한다. 보간 전후 clip 범위는 하나의 `terrain_future.scan.clip`
+  설정을 공유하고 불일치하면 오류를 낸다. 이 규칙은 기존
+  `OracleCurrentFuture`와 새 EasyStart task에 모두 적용한다.
 - 본 학습 후보는 seed 42(pilab), 43(Z790), 각 2048 env·3000 iteration이다.
   이 2개 seed 비교는 **teacher 전제 확인**이며 최종 통계 비교가 아니다.
   동일 seed의 Current-EasyStart를 9·10·11·12·13·14·15 cm,
