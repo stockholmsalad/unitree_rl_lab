@@ -11,6 +11,8 @@ from isaaclab.utils import configclass
 class StairEvalCfg:
     low_step_height_m: float = 0.09
     high_step_height_m: float = 0.19
+    low_gap_width_m: float = 0.10
+    high_gap_width_m: float = 0.15
     envs_per_height: int = 16
     forward_command_mps: float = 0.6
     episode_steps: int = 1000
@@ -19,6 +21,12 @@ class StairEvalCfg:
     top_position_margin_m: float = 0.1
     spawn_lateral_range_m: float = 0.25
     spawn_forward_m: float = 1.0
+    gap_spawn_forward_m: float = 0.0
+    gap_probe_ray_height_m: float = 20.0
+    gap_probe_inner_inset_m: float = 0.05
+    gap_probe_outer_outset_m: float = 0.05
+    gap_fall_drop_m: float = 0.15
+    gap_failure_margin_m: float = 0.10
     seed: int = 42
     trace_interval_steps: int = 100
     settle_steps: int = 50
