@@ -32,6 +32,7 @@ parser.add_argument("--video", action="store_true", help="고정 지형 평가 e
 parser.add_argument("--probe_terrain", action="store_true", help="현재 heightscan을 평탄하게 바꿨을 때 행동 변화를 기록한다.")
 parser.add_argument("--flatten_terrain_input", action="store_true", help="정책 입력 heightscan의 지형 높이 차이를 제거한다.")
 parser.add_argument("--contact_diagnostics", action="store_true", help="첫 단 부근 종료 사유·접촉 body·스텝 보상을 기록한다.")
+parser.add_argument("--audit_terrain_only", action="store_true", help="실제 생성 타일의 원점·메시 z 범위를 검증하고 종료한다.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 if args.video:
@@ -122,6 +123,49 @@ def main():
     agent_cfg.seed = cfg.seed
 
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if args.video else None)
+    if args.audit_terrain_only:
+        if args.terrain != "stairs":
+            raise ValueError("계단 메시 감사는 --terrain stairs에서만 실행한다")
+        terrain = env.unwrapped.scene.terrain
+        generator_cfg = env_cfg.scene.terrain.terrain_generator
+        regenerated = terrain_gen.TerrainGenerator(generator_cfg.copy(), device=env.unwrapped.device)
+        actual_origins = terrain.terrain_origins
+        expected_origins = torch.as_tensor(
+            regenerated.terrain_origins, device=actual_origins.device, dtype=actual_origins.dtype,
+        )
+        if not torch.allclose(actual_origins, expected_origins, atol=cfg.terrain_height_tolerance_m, rtol=0):
+            raise ValueError("시뮬레이터에 올린 타일 원점과 재생성 메시 원점이 다르다")
+        stair_cfg = generator_cfg.sub_terrains["stairs_up_low"]
+        count, _, _ = stair_geometry(generator_cfg.size, stair_cfg.border_width,
+                                     stair_cfg.platform_width, stair_cfg.step_width)
+        heights = torch.where(terrain.terrain_types < cfg.envs_per_height,
+                              cfg.low_step_height_m, cfg.high_step_height_m)
+        validate_stair_origins(terrain.env_origins[:, 2], heights, count, cfg.terrain_height_tolerance_m)
+        columns = []
+        for col in range(generator_cfg.num_cols):
+            mesh = regenerated.terrain_meshes[col]
+            z_min, z_max = float(mesh.bounds[0, 2]), float(mesh.bounds[1, 2])
+            if z_max - z_min <= cfg.terrain_height_tolerance_m:
+                raise ValueError(f"계단 대신 평면 메시가 생성된 열: {col}")
+            env_ids = (terrain.terrain_types == col).nonzero(as_tuple=True)[0].tolist()
+            if env_ids != [col]:
+                raise ValueError(f"열과 평가 env ID의 대응이 다르다: column={col}, env_ids={env_ids}")
+            columns.append({"column": col, "terrain_origin_z": float(actual_origins[0, col, 2]),
+                            "mesh_z_min": z_min, "mesh_z_max": z_max,
+                            "mesh_z_span": z_max - z_min,
+                            "env_ids": env_ids})
+        audit = {"task": args.task, "seed": cfg.seed, "num_rows": generator_cfg.num_rows,
+                 "num_cols": generator_cfg.num_cols, "low_step_height_m": cfg.low_step_height_m,
+                 "high_step_height_m": cfg.high_step_height_m, "stair_count": count,
+                 "configured_functions": {name: term.function.__name__
+                                          for name, term in generator_cfg.sub_terrains.items()},
+                 "columns": columns}
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(audit, indent=2))
+        print(f"TERRAIN_AUDIT_OK columns={len(columns)} output={output}", flush=True)
+        env.close()
+        return
     if args.video:
         env = gym.wrappers.RecordVideo(
             env, video_folder=str(Path(args.output).with_suffix("")) + "_video",
