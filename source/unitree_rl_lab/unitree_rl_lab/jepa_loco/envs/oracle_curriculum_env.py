@@ -117,6 +117,9 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         on_stairs = torch.isin(self._terrain_type_per_env[ids], self._stairs_up_type_ids)
         on_stairs |= torch.isin(self._terrain_type_per_env[ids], self._stairs_down_type_ids)
         on_stairs &= self.scene.terrain.terrain_levels[ids] >= self.cfg.progress.warmup_levels
+        # 계단 지형이 없으면(평지 평가 등) 첫 단 위치가 inf라 진단할 대상이 없다.
+        if self._first_step_far_edge_m == float("inf"):
+            return
         self.episode_first_tread_contact[ids] |= on_stairs & first_tread_contact(
             front_xy, origin[:, :2], front_force_n, self._first_riser_m,
             self._first_step_far_edge_m, self.cfg.progress.first_tread_contact_threshold_n,

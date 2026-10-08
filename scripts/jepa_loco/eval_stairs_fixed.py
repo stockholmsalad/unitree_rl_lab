@@ -155,6 +155,10 @@ def main():
     terrain = env.unwrapped.scene.terrain
     origin = env.unwrapped.scene.env_origins.clone()
     start_z = robot.data.root_pos_w[:, 2].clone()
+    # env별 기록용 출발 자세 (원점 기준 xy, yaw)
+    import isaaclab.utils.math as math_utils
+    start_xy = (robot.data.root_pos_w[:, :2] - origin[:, :2]).clone()
+    start_yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2].clone()
     command_sample = env.unwrapped.command_manager.get_command("base_velocity")[0].detach().cpu().tolist()
 
     if args.terrain == "stairs":
@@ -173,6 +177,14 @@ def main():
     max_outward = torch.zeros_like(max_steps)
     min_body_drop = torch.zeros_like(max_steps)
     consecutive = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.int)
+    max_consecutive = torch.zeros_like(consecutive)
+    height_ok_ever = torch.zeros_like(active)
+    position_ok_ever = torch.zeros_like(active)
+    done_step = torch.full((env.num_envs,), -1, device=env.unwrapped.device, dtype=torch.long)
+    done_reasons = [[] for _ in range(env.num_envs)]
+    last_xy = start_xy.clone()
+    last_yaw = start_yaw.clone()
+    term_manager_all = env.unwrapped.termination_manager
     trace = []
     peak_front_foot_z = torch.full_like(max_steps, -float("inf"))
     peak_front_foot_x = torch.full_like(max_steps, -float("inf"))
@@ -235,12 +247,22 @@ def main():
             just_done = active & dones.bool()
             time_outs = extras.get("time_outs", torch.zeros_like(dones)).bool()
             failed |= just_done & ~time_outs
+            for env_id in torch.nonzero(just_done, as_tuple=True)[0].tolist():
+                done_step[env_id] = step + 1
+                done_reasons[env_id] = [name for name in term_manager_all.active_terms
+                                        if term_manager_all.get_term(name)[env_id].item()]
             timed_out |= just_done & time_outs
             still_active = active & ~dones.bool()
             reached, progress = stair_progress(robot.data.root_pos_w, origin, start_z, heights, count,
                                                 top_edge, cfg.top_height_fraction, cfg.top_position_margin_m)
             max_steps = torch.where(still_active, torch.maximum(max_steps, progress), max_steps)
             forward = robot.data.root_pos_w[:, 0] - origin[:, 0]
+            if args.terrain == "stairs":
+                height_ok_ever |= still_active & (progress >= cfg.top_height_fraction * count)
+                position_ok_ever |= still_active & (forward >= top_edge - cfg.top_position_margin_m)
+            # done 직후 로봇은 이미 reset 되었으므로 마지막 위치는 활성 스텝에서만 갱신한다
+            last_xy = torch.where(still_active[:, None], robot.data.root_pos_w[:, :2] - origin[:, :2], last_xy)
+            last_yaw = torch.where(still_active, math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2], last_yaw)
             max_outward = torch.where(still_active, torch.maximum(max_outward, forward), max_outward)
             front_z = (robot.data.body_pos_w[:, front_foot_ids, 2] - origin[:, None, 2]).amax(dim=1)
             front_x = (robot.data.body_pos_w[:, front_foot_ids, 0] - origin[:, None, 0]).amax(dim=1)
@@ -272,6 +294,7 @@ def main():
                 peak_front_foot_z_settled = torch.where(still_active, torch.maximum(peak_front_foot_z_settled, front_z), peak_front_foot_z_settled)
             min_body_drop = torch.where(still_active, torch.minimum(min_body_drop, progress), min_body_drop)
             consecutive = torch.where(still_active & reached, consecutive + 1, torch.zeros_like(consecutive))
+            max_consecutive = torch.maximum(max_consecutive, consecutive)
             success |= consecutive >= cfg.hold_steps
             active = still_active
             if (step % cfg.trace_interval_steps == 0 or step == cfg.episode_steps - 1) and active.any():
@@ -335,6 +358,31 @@ def main():
                 for i, term_name in enumerate(reward_terms._term_names)
             },
         }
+    def _unmet(env_id: int) -> list[str]:
+        if args.terrain != "stairs" or success[env_id]:
+            return []
+        missing = []
+        if not height_ok_ever[env_id]:
+            missing.append("body_rise")
+        if not position_ok_ever[env_id]:
+            missing.append("forward_x")
+        if height_ok_ever[env_id] and position_ok_ever[env_id]:
+            missing.append("hold_steps")
+        return missing
+
+    report["per_env"] = [{
+        "env_id": i,
+        "terrain_type": int(terrain.terrain_types[i].item()),
+        "step_height_m": None if args.terrain == "flat" else heights[i].item(),
+        "spawn_x_m": start_xy[i, 0].item(), "spawn_y_m": start_xy[i, 1].item(), "spawn_yaw_rad": start_yaw[i].item(),
+        "success": bool(success[i].item()),
+        "outcome": "success" if success[i] else ("non_timeout" if failed[i] else ("time_out" if timed_out[i] else "active_at_end")),
+        "termination_reasons": done_reasons[i], "done_step": int(done_step[i].item()),
+        "max_body_rise_steps": max_steps[i].item(), "max_forward_m": max_outward[i].item(),
+        "last_x_m": last_xy[i, 0].item(), "last_y_m": last_xy[i, 1].item(), "last_yaw_rad": last_yaw[i].item(),
+        "max_consecutive_reached": int(max_consecutive[i].item()),
+        "unmet_success_conditions": _unmet(i),
+    } for i in range(env.num_envs)]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2))
