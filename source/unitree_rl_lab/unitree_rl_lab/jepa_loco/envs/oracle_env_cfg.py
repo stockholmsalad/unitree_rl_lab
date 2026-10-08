@@ -248,6 +248,13 @@ class OracleCurrentFutureObservationsCfg(OracleObservationsCfg):
     terrain_future: TerrainFutureCfg = TerrainFutureCfg()
 
 
+def configure_future_observation(cfg):
+    """미래 보간 전 clip과 최종 관측 clip에 같은 cfg 값을 적용한다."""
+    scan = cfg.observations.terrain_future.scan
+    scan.params["horizon_s"] = cfg.future_horizon_s
+    scan.params["clip_range"] = scan.clip
+
+
 @configclass
 class OracleWideEnvCfg(OracleCurrentEnvCfg):
     scene: OracleWideSceneCfg = OracleWideSceneCfg(num_envs=1024, env_spacing=2.5)
@@ -269,7 +276,7 @@ class OracleCurrentFutureEnvCfg(OracleCurrentEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.wide_height_scanner.update_period = self.sim.dt
-        self.observations.terrain_future.scan.params["horizon_s"] = self.future_horizon_s
+        configure_future_observation(self)
 
 
 @configclass
@@ -315,7 +322,7 @@ class OracleCurrentFutureEasyStartEnvCfg(OracleCurrentEasyStartEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.wide_height_scanner.update_period = self.sim.dt
-        self.observations.terrain_future.scan.params["horizon_s"] = self.future_horizon_s
+        configure_future_observation(self)
 
 
 @configclass

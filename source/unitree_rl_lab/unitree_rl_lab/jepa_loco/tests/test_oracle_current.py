@@ -51,6 +51,7 @@ def test_wide_and_future_cfg_share_scan_grid_and_camera_free():
     assert wide.scene.wide_height_scanner.pattern_cfg.ordering == "yx"
     assert future.scene.wide_height_scanner.pattern_cfg.resolution == future.scene.height_scanner.pattern_cfg.resolution
     assert future.observations.terrain_future.scan.params["horizon_s"] == future.future_horizon_s
+    assert future.observations.terrain_future.scan.params["clip_range"] == future.observations.terrain_future.scan.clip
 
 
 def test_three_oracles_share_settings_except_current_clearance_reward():
@@ -113,6 +114,7 @@ def test_easystart_current_future_shares_all_non_actor_settings():
     assert future.progress.warmup_levels == 2
     assert future.scene.d435i is None
     assert future.scene.wide_height_scanner.update_period == future.sim.dt
+    assert future.observations.terrain_future.scan.params["clip_range"] == future.observations.terrain_future.scan.clip
 
     current_runner, future_runner = OracleCurrentPPORunnerCfg(), OracleCurrentFutureEasyStartPPORunnerCfg()
     for name in ("algorithm", "critic"):
