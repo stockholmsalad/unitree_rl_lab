@@ -80,3 +80,15 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:OracleCurrentFuturePPORunnerCfg",
     },
 )
+
+
+gym.register(
+    id="Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart",
+    entry_point="unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env:OracleCurriculumEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentFutureEasyStartEnvCfg",
+        "play_env_cfg_entry_point": "unitree_rl_lab.jepa_loco.envs.oracle_env_cfg:OracleCurrentFutureEasyStartEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg:OracleCurrentFutureEasyStartPPORunnerCfg",
+    },
+)

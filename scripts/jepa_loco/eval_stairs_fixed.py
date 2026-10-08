@@ -18,6 +18,7 @@ parser.add_argument("--task", choices=(
     "Unitree-Go2-JepaLoco-OracleCurrent-EasyStart",
     "Unitree-Go2-JepaLoco-OracleWide",
     "Unitree-Go2-JepaLoco-OracleCurrentFuture",
+    "Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart",
 ), required=True)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--output", required=True)

@@ -135,3 +135,10 @@ class OracleCurrentFuturePPORunnerCfg(OracleCurrentPPORunnerCfg):
         obs_normalization=True,
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
     )
+
+
+@configclass
+class OracleCurrentFutureEasyStartPPORunnerCfg(OracleCurrentFuturePPORunnerCfg):
+    """OracleCurrentPPORunnerCfg와 동일한 PPO·rollout을 쓰는 EasyStart teacher."""
+
+    experiment_name = "jepa_loco_oracle_current_future_easystart"

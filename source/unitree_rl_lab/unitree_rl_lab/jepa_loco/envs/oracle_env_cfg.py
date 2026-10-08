@@ -191,12 +191,16 @@ class OracleCurrentEasyStartEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.commands.base_velocity.initial_ranges = self.commands.base_velocity.final_ranges.copy()
-        self.commands.base_velocity.ranges = self.commands.base_velocity.final_ranges.copy()
-        self.scene.num_envs = 32
-        self.scene.terrain.max_init_terrain_level = self.easy_start.num_rows - 1
-        self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
+        configure_easy_start_play(self)
+
+
+def configure_easy_start_play(cfg):
+    """Current와 Current+Future 평가가 같은 명령·지형·이벤트 설정을 쓰게 한다."""
+    cfg.commands.base_velocity.initial_ranges = cfg.commands.base_velocity.final_ranges.copy()
+    cfg.commands.base_velocity.ranges = cfg.commands.base_velocity.final_ranges.copy()
+    cfg.scene.terrain.max_init_terrain_level = cfg.easy_start.num_rows - 1
+    cfg.observations.policy.enable_corruption = False
+    cfg.events.push_robot = None
 
 
 @configclass
@@ -298,3 +302,26 @@ class OracleCurrentFutureEnvCfg_PLAY(OracleCurrentFutureEnvCfg):
         self.scene.terrain.max_init_terrain_level = self.scene.terrain.terrain_generator.num_rows - 1
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
+
+
+@configclass
+class OracleCurrentFutureEasyStartEnvCfg(OracleCurrentEasyStartEnvCfg):
+    """Current-EasyStart 보상·지형·진단을 공유하는 Current+Future teacher."""
+
+    scene: OracleWideSceneCfg = OracleWideSceneCfg(num_envs=1024, env_spacing=2.5)
+    observations: OracleCurrentFutureObservationsCfg = OracleCurrentFutureObservationsCfg()
+    future_horizon_s: float = 0.5
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.wide_height_scanner.update_period = self.sim.dt
+        self.observations.terrain_future.scan.params["horizon_s"] = self.future_horizon_s
+
+
+@configclass
+class OracleCurrentFutureEasyStartEnvCfg_PLAY(OracleCurrentFutureEasyStartEnvCfg):
+    scene: OracleWideSceneCfg = OracleWideSceneCfg(num_envs=32, env_spacing=2.5)
+
+    def __post_init__(self):
+        super().__post_init__()
+        configure_easy_start_play(self)
