@@ -707,3 +707,60 @@ reset 직전 `_reset_idx` hook에서 캡처하도록 고쳤다. 기존 `last_x/y
 origin z가 각각 −0.63/−0.77 m로 요청 높이와 일치한다. 따라서 같은
 폴더의 JSON도 **파일별로** origin z 불변식을 검사한 뒤 분석에 포함한다.
 이전 파일을 덮어쓰거나 진행 중 평가를 중단하지 않았다.
+
+### 2026-10-08 — 평가 타일 실물 감사 및 고정 계단 전량 재평가
+
+기존 `height_sweep_n128_perenv/`의 8개 파일을 다시 감사했다. seed 42의
+네 파일과 seed 43의 5/7 cm 파일은 각각 256개 중 **49개 평지 열**
+(low 17, high 32)을 포함한다. seed 43의 나머지 세 파일은 앞서 적용한
+평가 생성 수정 후 실행되어 평지 열이 0개다. 같은 폴더에 수정 전후
+결과가 섞여 있었다. 예전 16 env 평가의 9 cm 13/16을 비롯해 이
+오염을 받은 성공률은 계단 등반 성공률로 인용하지 않는다.
+
+원인은 평가에서 학습용 `EasyUpCfg.function`을 1행 generator에 그대로
+가져오던 경로였다. IsaacLab은 1행에서도 열마다 difficulty를 뽑고,
+이 함수는 이를 10행 학습 커리큘럼의 레벨로 복원한다. 그중 0·1행에
+해당하는 열은 평지 워밍업 타일이 된다. 현재 평가 생성은 원본
+`inverted_pyramid_stairs_terrain`을 가진 별도 고정 높이 cfg를 사용한다.
+`OracleCurrentEasyStartEnvCfg_PLAY.__post_init__`은 평가 cfg 교체 **전에**
+실행되고, `OracleCurriculumEnv.__init__`은 generator의 seed만 덮어쓴다.
+`TerrainGenerator`의 지형 종류 배정·difficulty 경로에는 flat 대체가
+없으며 `TerrainImporter`는 이 설정의 256개 열에 env ID 0~255를
+각각 대응시킨다. 따라서 재파싱이나 이웃 타일로의 초기 배치는 이
+49개 평지 열의 원인이 아니었다.
+
+평가 시작 시 `validate_stair_origins`가 모든 env의 실제 origin z를
+검사한다. 예상값은 사용자 제안 `−단 수×단 높이`가 아니라 IsaacLab
+inverted-pyramid 구현의 **`−(단 수+1)×단 높이`**다. 6단의 13/15 cm
+경우 실제 origin은 각각 −0.91/−1.05 m다. 평지 열의 origin z=0은
+즉시 오류로 거부된다. `--audit_terrain_only`로 실제 importer의
+`terrain_origins`와 동일 cfg·seed에서 재생성한 각 열의 메시를
+대조했다. 13/15 cm, 256열에서 메시 z 범위는 최소 1.04 m / 최대
+1.20 m, origin은 low −0.91/high −1.05 m, 평지 메시 0개였고
+열 ID와 env ID가 일치했다. 동일 감사를 두 번 실행한 JSON은 완전히
+같다 (`height_sweep_verified/audit_13_15_run{1,2}.json`).
+
+`scripts/jepa_loco/recheck_fixed_stairs.sh`로 평가 seed 43, 중심 출발,
+0.6 m/s, 높이당 128 env, 두 정책 seed × 네 높이 쌍을 **두 번**
+재평가했다. 모든 16개 파일이 origin 검사를 통과했고 평지 열은 0개였다.
+아래 값은 각 반복에서 동일했다 (`height_sweep_verified/run{1,2}/`).
+
+| 고정 계단 높이 | 정책 seed 42 | 정책 seed 43 |
+|---|---:|---:|
+| 5 cm | 128/128 | 128/128 |
+| 7 cm | 128/128 | 128/128 |
+| 9 cm | 128/128 | 128/128 |
+| 11 cm | 128/128 | 79/128 (61.7%) |
+| 13 cm | 4/128 (3.1%) | 5/128 (3.9%) |
+| 15 cm | 0/128 | 0/128 |
+| 17 cm | 0/128 | 0/128 |
+| 19 cm | 0/128 | 0/128 |
+
+두 반복의 env별 `per_env` 레코드, 지형 origin 배열, 그룹 요약은
+8개 조건 모두 정확히 일치했다 (총 2048개 env 판정 일치). 이전 오염
+파일에서 평지 열만 제외한 결과와 추세가 같다. seed 42의 5/7/9/11 cm는
+각각 유효 열 111/111 또는 96/96에서 이번 128/128로, 13 cm는
+4/111에서 4/128로 바뀌었다. seed 43의 수정 후 9/11/13/15 cm
+파일은 이번 결과와 같다. 평지 열로 인한 7 cm < 9 cm 역전은 사라졌고,
+11 cm 정책 차이는 평지 타일을 제거해도 남는다. 이번 작업에서 학습은
+실행하지 않았다.
