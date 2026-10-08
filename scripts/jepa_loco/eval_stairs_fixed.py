@@ -49,7 +49,10 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 import unitree_rl_lab.tasks  # noqa: E402, F401
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg  # noqa: E402
 from isaaclab_tasks.utils import load_cfg_from_registry  # noqa: E402
-from unitree_rl_lab.jepa_loco.eval.stairs import StairEvalCfg, stair_geometry, stair_progress  # noqa: E402
+from unitree_rl_lab.jepa_loco.eval.stairs import (  # noqa: E402
+    StairEvalCfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
+    unmet_success_conditions, validate_stair_origins,
+)
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
 
@@ -74,8 +77,8 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
     else:
         stair = generator.sub_terrains["stairs_up"]
         generator.sub_terrains = {
-            "stairs_up_low": stair.replace(proportion=0.5, step_height_range=(cfg.low_step_height_m, cfg.low_step_height_m)),
-            "stairs_up_high": stair.replace(proportion=0.5, step_height_range=(cfg.high_step_height_m, cfg.high_step_height_m)),
+            "stairs_up_low": fixed_height_stair_cfg(stair, cfg.low_step_height_m, 0.5),
+            "stairs_up_high": fixed_height_stair_cfg(stair, cfg.high_step_height_m, 0.5),
         }
     env_cfg.scene.terrain.terrain_generator = generator
     env_cfg.scene.terrain.max_init_terrain_level = 0
@@ -169,6 +172,8 @@ def main():
         count, first_riser, top_edge = 0, None, 0.0
     heights = torch.where(terrain.terrain_types < cfg.envs_per_height, cfg.low_step_height_m,
                           cfg.high_step_height_m).to(env.unwrapped.device)
+    if args.terrain == "stairs":
+        validate_stair_origins(origin[:, 2], heights, count, cfg.terrain_height_tolerance_m)
     active = torch.ones(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
     success = torch.zeros_like(active)
     failed = torch.zeros_like(active)
@@ -180,10 +185,13 @@ def main():
     max_consecutive = torch.zeros_like(consecutive)
     height_ok_ever = torch.zeros_like(active)
     position_ok_ever = torch.zeros_like(active)
+    reached_top_ever = torch.zeros_like(active)
     done_step = torch.full((env.num_envs,), -1, device=env.unwrapped.device, dtype=torch.long)
     done_reasons = [[] for _ in range(env.num_envs)]
     last_xy = start_xy.clone()
     last_yaw = start_yaw.clone()
+    terminal_xy = start_xy.clone()
+    terminal_yaw = start_yaw.clone()
     term_manager_all = env.unwrapped.termination_manager
     trace = []
     peak_front_foot_z = torch.full_like(max_steps, -float("inf"))
@@ -197,10 +205,16 @@ def main():
         contact_ids, contact_names = contact_sensor.find_bodies(".*")
         front_contact_ids = [idx for idx, name in zip(contact_ids, contact_names) if name.startswith("F") and name.endswith("_foot")]
         term_manager = env.unwrapped.termination_manager
-        original_reset_idx = env.unwrapped._reset_idx
+        contact_trace_started = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
+        contact_trace_remaining = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.long)
+    original_reset_idx = env.unwrapped._reset_idx
+    step_index = [0]
 
-        def capture_reset(env_ids):
-            ids = torch.as_tensor(env_ids, device=env.unwrapped.device, dtype=torch.long)
+    def capture_reset(env_ids):
+        ids = torch.as_tensor(env_ids, device=env.unwrapped.device, dtype=torch.long)
+        terminal_xy[ids] = robot.data.root_pos_w[ids, :2] - origin[ids, :2]
+        terminal_yaw[ids] = math_utils.euler_xyz_from_quat(robot.data.root_quat_w[ids])[2]
+        if args.contact_diagnostics and args.terrain == "stairs":
             root_x = (robot.data.root_pos_w[ids, 0] - origin[ids, 0]).abs()
             for env_id, distance in zip(ids.tolist(), root_x.tolist()):
                 if abs(distance - first_riser) > cfg.contact_probe_margin_m:
@@ -219,12 +233,9 @@ def main():
                     "reward_step": {name: (reward_terms._step_reward[env_id, i] * env.unwrapped.step_dt).item()
                                     for i, name in enumerate(reward_terms._term_names)},
                 })
-            return original_reset_idx(env_ids)
+        return original_reset_idx(env_ids)
 
-        env.unwrapped._reset_idx = capture_reset
-        step_index = [0]
-        contact_trace_started = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
-        contact_trace_remaining = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.long)
+    env.unwrapped._reset_idx = capture_reset
 
     for step in range(cfg.episode_steps):
         if args.contact_diagnostics and args.terrain == "stairs":
@@ -260,9 +271,12 @@ def main():
             if args.terrain == "stairs":
                 height_ok_ever |= still_active & (progress >= cfg.top_height_fraction * count)
                 position_ok_ever |= still_active & (forward >= top_edge - cfg.top_position_margin_m)
-            # done 직후 로봇은 이미 reset 되었으므로 마지막 위치는 활성 스텝에서만 갱신한다
+                reached_top_ever |= still_active & reached
+            # done env는 _reset_idx 직전 캡처한 종료 위치를 사용한다.
             last_xy = torch.where(still_active[:, None], robot.data.root_pos_w[:, :2] - origin[:, :2], last_xy)
             last_yaw = torch.where(still_active, math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2], last_yaw)
+            last_xy = torch.where(just_done[:, None], terminal_xy, last_xy)
+            last_yaw = torch.where(just_done, terminal_yaw, last_yaw)
             max_outward = torch.where(still_active, torch.maximum(max_outward, forward), max_outward)
             front_z = (robot.data.body_pos_w[:, front_foot_ids, 2] - origin[:, None, 2]).amax(dim=1)
             front_x = (robot.data.body_pos_w[:, front_foot_ids, 0] - origin[:, None, 0]).amax(dim=1)
@@ -361,14 +375,10 @@ def main():
     def _unmet(env_id: int) -> list[str]:
         if args.terrain != "stairs" or success[env_id]:
             return []
-        missing = []
-        if not height_ok_ever[env_id]:
-            missing.append("body_rise")
-        if not position_ok_ever[env_id]:
-            missing.append("forward_x")
-        if height_ok_ever[env_id] and position_ok_ever[env_id]:
-            missing.append("hold_steps")
-        return missing
+        return unmet_success_conditions(
+            False, bool(height_ok_ever[env_id]), bool(position_ok_ever[env_id]),
+            bool(reached_top_ever[env_id]),
+        )
 
     report["per_env"] = [{
         "env_id": i,

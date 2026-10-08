@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import isaaclab.terrains as terrain_gen
 from isaaclab.utils import configclass
 
 
@@ -25,6 +26,7 @@ class StairEvalCfg:
     contact_probe_foot_x_margin_m: float = 0.02
     contact_probe_force_threshold_n: float = 1.0
     contact_probe_steps: int = 4
+    terrain_height_tolerance_m: float = 1.0e-4
     viewer_eye: tuple[float, float, float] = (-2.0, 2.5, 1.2)
     viewer_lookat: tuple[float, float, float] = (1.2, 0.0, 0.3)
     viewer_env_index: int = 0
@@ -53,3 +55,42 @@ def stair_progress(root_xyz: torch.Tensor, origin_xyz: torch.Tensor, start_z: to
     forward = root_xyz[:, 0] - origin_xyz[:, 0]
     reached_top = (gain >= height_fraction * stair_count * step_heights) & (forward >= top_edge - position_margin)
     return reached_top, gain / step_heights
+
+
+def fixed_height_stair_cfg(template, height_m: float, proportion: float):
+    """학습용 평지 워밍업 함수를 제거한 평가 전용 고정 높이 계단."""
+    if height_m <= 0 or proportion <= 0:
+        raise ValueError("평가 계단 높이와 비율은 양수여야 한다")
+    return terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+        proportion=proportion, step_height_range=(height_m, height_m),
+        step_width=template.step_width, platform_width=template.platform_width,
+        border_width=template.border_width, holes=template.holes,
+    )
+
+
+def validate_stair_origins(origin_z: torch.Tensor, heights: torch.Tensor,
+                           stair_count: int, tolerance_m: float) -> None:
+    """IsaacLab 역피라미드 계단의 중앙 시작면이 실제 요청 높이인지 검사."""
+    if origin_z.shape != heights.shape or origin_z.ndim != 1:
+        raise ValueError("origin_z와 heights는 같은 [N] shape이어야 한다")
+    if stair_count < 1 or tolerance_m < 0:
+        raise ValueError("단 수와 허용오차가 올바르지 않다")
+    expected_z = -(stair_count + 1) * heights
+    if not torch.allclose(origin_z, expected_z, atol=tolerance_m, rtol=0):
+        bad = (~torch.isclose(origin_z, expected_z, atol=tolerance_m, rtol=0)).nonzero(as_tuple=True)[0]
+        raise ValueError(f"평가 지형에 요청 높이와 다른 열이 있다: {bad[:10].tolist()}")
+
+
+def unmet_success_conditions(success: bool, height_ever: bool,
+                             position_ever: bool, reached_ever: bool) -> list[str]:
+    """단독 조건 충족, 동시 충족, 유지 시간 부족을 구분한다."""
+    if success:
+        return []
+    missing = []
+    if not height_ever:
+        missing.append("body_rise")
+    if not position_ever:
+        missing.append("forward_x")
+    if height_ever and position_ever:
+        missing.append("hold_steps" if reached_ever else "simultaneous_conditions")
+    return missing
