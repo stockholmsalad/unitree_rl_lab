@@ -665,3 +665,45 @@ TensorBoard 마지막 기록은 iteration 704, 마지막 checkpoint는 `model_70
 점검에서 확인하지 않았다. 따라서 seed 43의 3000 iteration 전체 곡선은
 아직 없고, A안과 nominal의 동일 예산 비교는 현재 0~704 구간까지만
 가능하다. pilab nominal seed 42 상태는 이 머신에서 확인되지 않았다.
+
+## 2026-10-08 — EasyStart 고정 계단 평가 생성 결함 점검
+
+진행 중인 128 env/높이 평가를 중단하지 않고 기존 JSON과 IsaacLab 0.54.4
+소스를 대조했다. `eval_stairs_fixed.py`는 평가 지형을 1행으로 만들면서
+EasyStart의 학습용 계단 config `function`을 그대로 복사했다. IsaacLab은
+1행에서도 각 열의 difficulty를 0~1로 무작위 생성하고, EasyStart 함수는
+이를 학습용 10행 레벨로 해석한다. 따라서 레벨 0·1로 해석된 열은 계단이
+아닌 **평지**였다. JSON `step_height_m`는 실제 메시가 아니라 요청 높이였다.
+
+현재 저장된 seed 42 per-env 결과에서 5/9 cm의 각 low 그룹은 17/128개
+열이 평지(`terrain_origin_z=0`)였고, 실패 ID 17개와 정확히 같았다.
+7/11 cm high 그룹은 32/128개 열이 평지였고, 실패 ID 32개와 정확히
+같았다. 이 때문에 5·9 cm 111/128, 7·11 cm 96/128이라는 성공 수가
+정확히 반복되고, 7 cm가 9 cm보다 낮아 보였다. 이전 두 정책의 동일한
+성공 수 역시 같은 평가 seed가 고른 평지 열 집합에 크게 좌우되었을
+가능성이 높다. **기존 height sweep의 성공률은 고정 높이 계단 성공률로
+사용하지 않는다.**
+
+9 cm seed 42 per-env 결과의 비시간초과 종료 35건은 모두 이미 성공한
+에피소드에서 발생했다. 종료 당시 마지막 활성 위치 x의 중앙값은
+약 4.08 m로 평가 타일 경계 x=4.0 m 부근이다. 현재 평가는 성공 후에도
+1000스텝까지 진행하므로 `success_rate`와 `non_timeout_rate`가 겹친다.
+비시간초과 종료율을 등반 실패율로 해석하지 않는다. 이 판정 정의는 이번
+수정에서 바꾸지 않았다.
+
+평가 생성은 IsaacLab 원본 `MeshInvertedPyramidStairsTerrainCfg`를 사용해
+고정 높이 계단을 만들도록 수정했다. 평가 시작 전에 모든 env의 지형
+origin z가 `−(단 수+1)×요청 높이`인지 검사한다. per-env의 종료 위치는
+reset 직전 `_reset_idx` hook에서 캡처하도록 고쳤다. 기존 `last_x/y/yaw`는
+종료 스텝이 아닌 한 스텝 전 값이었다. 성공 판정은 바꾸지 않았다.
+별도로 `height_ok_ever`와 `position_ok_ever`가 서로 다른 시점에만
+성립했으면 `simultaneous_conditions`, 동시에 성립했지만 유지 시간이
+부족하면 `hold_steps`로 분류한다. 기존 JSON의 이 두 경우는 합쳐져 있었다.
+
+진행 중인 shell sweep은 높이 쌍마다 새 Python 프로세스를 띄운다. 수정 전
+시작한 `height_sweep_n128_perenv/easystart_s43_0.05_0.07.json`에는 여전히
+평지 열이 low 17개/high 32개 있지만, 수정 후 시작한
+`easystart_s43_0.09_0.11.json`은 두 그룹 모두 평지 열 0개이고
+origin z가 각각 −0.63/−0.77 m로 요청 높이와 일치한다. 따라서 같은
+폴더의 JSON도 **파일별로** origin z 불변식을 검사한 뒤 분석에 포함한다.
+이전 파일을 덮어쓰거나 진행 중 평가를 중단하지 않았다.
