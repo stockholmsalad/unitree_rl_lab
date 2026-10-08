@@ -764,3 +764,56 @@ inverted-pyramid 구현의 **`−(단 수+1)×단 높이`**다. 6단의 13/15 cm
 파일은 이번 결과와 같다. 평지 열로 인한 7 cm < 9 cm 역전은 사라졌고,
 11 cm 정책 차이는 평지 타일을 제거해도 남는다. 이번 작업에서 학습은
 실행하지 않았다.
+
+## 2026-10-08 — Current+Future-EasyStart teacher 학습 준비
+
+Phase 2의 목표를 Phase 3 depth student가 `z_current`와 `z_future`를
+함께 증류받을 **Current+Future teacher 생성**과, 미래 정보가 Current보다
+등반에 도움이 되는지에 대한 전제 확인으로 정리했다. Wide는 선택 비교군으로
+미룬다. 기존 `OracleCurrentFuture` task는 유지하고 새
+`Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart` task와 PLAY/runner
+cfg를 추가했다. 새 env cfg는 `OracleCurrentEasyStartEnvCfg`를 상속하므로
+보상, 지형, 명령, 커리큘럼, 종료, 이벤트, critic, 진단 설정을 한 곳에서
+공유한다. PLAY의 최종 명령 범위와 이벤트 설정도 공통 함수가 적용한다.
+PPO 알고리즘과 100스텝 rollout은 Current runner에서 상속한다. 차이는
+관측에 미래 187점 패치와 이를 위한 wide 스캐너가 추가되고, 공유
+`187→128→32` encoder가 현재·미래 패치를 각각 처리해 총 64차원
+terrain latent를 policy에 준다는 점이다. Current는 32차원이다.
+
+**미래 패치 가시성:** 현재 wide 스캐너는 4.0×3.0 m, 0.1 m 간격이고
+현재/미래 패치는 1.6×1.0 m, 187점이다. 최종 명령의 vx 양끝
+(−0.3, 2.0 m/s), vy 양끝(±0.4 m/s) 및 yaw-rate −1~1 rad/s를
+촘촘히 훑어 0.5 s SE(2) 외삽 패치의 최대 |x|≈1.950 m,
+최대 |y|≈1.259 m를 얻었다. 스캐너 한계는 |x|≤2.0 m,
+|y|≤1.5 m이므로 범위 밖 점은 없고, x 여유가 약 5 cm다.
+현재 샘플러는 범위 밖일 때 `grid_sample`의 `padding_mode="border"`로
+경계값을 복제하고 visible=False를 반환한다. 이번 확정 명령 범위에는
+해당하지 않으므로 wide 크기, horizon, 처리 방식을 바꾸지 않았다.
+최대 명령 조합과 중간 yaw-rate에서 전체 187점 가시성을 테스트한다.
+
+Isaac 앱 내부 전체 단위 테스트 **73개 통과**. 새 task의 8 env·1 iteration
+스모크는 완료했고, TensorBoard `Perf/collection_time=3.647 s`,
+`Perf/learning_time=0.112 s`, 합계 **3.760 s/iteration**이었다.
+이는 초기 8 env 연결 검사이며 2048 env 처리량의 추정치는 아니다.
+스모크 `model_0.pt`로 새 task의 고정 계단 평가 4 env·20스텝을 실행해
+origin 검사 통과를 확인했다. 9/11 cm의 origin z는 각각
+−0.63/−0.77 m(6단)이고 요청 높이와 일치한다. 이 스모크의 성공률은
+학습 전 checkpoint이므로 성능으로 해석하지 않는다.
+
+**본 학습은 시작하지 않음.** 예정 조건은 Current+Future-EasyStart
+seed 42(pilab), seed 43(Z790), 각 2048 env·3000 iteration,
+run_name `oracle_future_easystart_s42`/`oracle_future_easystart_s43`이다.
+비교 대상은 같은 seed의 Current-EasyStart 3000 iteration이다. 기존
+Current-EasyStart의 마지막 100 iteration 평균은 pilab 약 7.83 s/iter,
+Z790 약 11.05 s/iter였지만 새 조건의 추가 wide 스캐너는 2048 env에서
+실측하지 않았다. 실행 전 예상 시간은 pilab **약 7~18 h**,
+Z790 **약 10~24 h**의 보수적 범위로 제시하고 사용자 확인을 받는다.
+
+**평가 프로토콜:** 두 정책과 두 seed를 고정 오르기 계단
+9/10/11/12/13/14/15 cm, 높이당 128 env, 평가 seed 43,
+중심 출발·0.6 m/s로 맞춘다. 모든 env의 origin 검사를 통과한 JSON만
+분석한다. 11~13 cm 변별 구간에서 Current+Future의 성공률이 Current와
+같거나 높으면 teacher 후보로 확정한다. 조건당 2개 seed는 통계적 우월성
+입증이 아니라 이 전제의 초기 확인이다. 학습 중 레벨별 첫 단 통과율,
+첫 통과 iteration, play 영상도 함께 확인한다. 최종 비교에는 조건당
+3개 이상 seed 규칙을 유지한다.

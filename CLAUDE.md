@@ -53,6 +53,38 @@
    시퀀스가 준비되면 PPO policy와 terrain head를 고정하고 encoder/predictor를 real JEPA +
    simulation replay로 적응시킨다. 실기 적응 실험은 로그 확보 후 시작한다.
 
+### 2026-10-08 Phase 2 teacher 우선순위 및 공정 비교
+
+- Phase 2의 주목표는 Phase 3 depth student가 증류받을 **Current+Future teacher**
+  checkpoint를 만드는 것이다. 학생의 공유 terrain encoder는 `z_current`, `z_future`를
+  각각 모방하므로 Current 단독 checkpoint는 대조군이다. Wide는 선택 비교군으로
+  뒤로 미룬다. 이 결정이 위의 세 조건 동시 비교 순서를 대체한다.
+- 새 task `Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart`는
+  Current-EasyStart의 보상(swing clearance 1.0, nominal hip −0.7,
+  thigh/calf −0.15), EasyStart 지형(워밍업 2행, 계단 0.05~0.20 m,
+  gap 0.10~0.30 m), 경로 길이+장애물 통과 게이트, 명령 스케줄,
+  종료 조건·이벤트·critic·PPO·100스텝 rollout·레벨별 진단을 상속한다.
+  보상 계산에 쓰는 `height_scanner`는 두 조건에서 같다. 관측만 Current의
+  현재 187점 패치에서 Current+Future의 현재/미래 각 187점 패치로 확장한다.
+  후자는 명령을 0.5 s SE(2) 적분한 pose를 중심으로 한다. 같은
+  `187→128→32` terrain encoder를 두 패치에 적용해 policy 입력 terrain
+  latent는 Current 32차원, Current+Future 64차원이다.
+- 미래 패치는 4.0×3.0 m wide 스캐너(0.1 m 간격)의 값을 보간한다.
+  최종 명령 범위 `vx∈[−0.3,2.0]`, `vy∈[−0.4,0.4]`,
+  `ωz∈[−1,1]`에서 0.5 s 외삽한 패치의 최대 절댓값은
+  x 약 1.950 m < 2.0 m, y 약 1.259 m < 1.5 m다. x 여유는 약
+  0.050 m이므로 범위 검사를 테스트로 유지한다. 현재 구현의 범위 밖
+  `grid_sample(padding_mode="border")`는 경계값으로 채우지만 확정 명령
+  범위에서는 사용되지 않는다. wide 크기와 horizon은 바꾸지 않는다.
+- 본 학습 후보는 seed 42(pilab), 43(Z790), 각 2048 env·3000 iteration이다.
+  이 2개 seed 비교는 **teacher 전제 확인**이며 최종 통계 비교가 아니다.
+  동일 seed의 Current-EasyStart를 9·10·11·12·13·14·15 cm,
+  높이당 128 env, 평가 seed 43, 중심 출발, 0.6 m/s의 고정 오르기
+  계단에서 다시 평가한다. 모든 평가에서 지형 origin 검사를 통과해야 한다.
+  11~13 cm에서 Current+Future가 Current와 같거나 높은지 확인하고,
+  학습 곡선의 레벨별 첫 단 통과율과 최초 통과 iteration 및 play 영상을
+  함께 본다. 최종 비교에는 위의 조건당 seed 3개 이상 규칙을 적용한다.
+
 ### 2026-10-06 Oracle 커리큘럼·비교 결정
 
 - 성능 기반 지형 커리큘럼을 유지한다. 에피소드 시작점과 종료점 사이의 직선거리 대신
