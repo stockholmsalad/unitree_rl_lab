@@ -12,6 +12,11 @@
 
 ### 목표 및 모델
 
+2026-10-08 사용자 결정이 아래 4~7번을 갱신한다. 2번의 공유 미래
+terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 경로에서는
+꺼진 선택 ablation**이다. 3번의 JEPA 미래 target은 미래 *Depth 표현*을
+뜻하며 특권 미래 heightmap 증류를 뜻하지 않는다.
+
 1. Depth 한 프레임을 기존 2채널 CNN에 통과시키고, 10 Hz 새 프레임에서만 갱신하는
    시간축 backbone으로 context `h_t`를 만든다. 기존 GRU는 기준선으로 유지하고 Mamba를
    같은 CNN·입력·평가 조건에서 비교한다. 실제 Mamba 구현은 라이브러리 설치·CUDA 빌드 검증 후 진행한다.
@@ -22,22 +27,27 @@
    행동별 반사실 제어가능성 주장은 하지 않는다.
 3. 실제 미래 Depth context를 EMA target encoder에 넣고 stop-gradient한
    `h_target(t+Δ)`와 예측 `h_future`의 MSE를 `L_JEPA`로 쓴다.
-4. 특권 heightmap teacher는 현재 patch `H_current`, 명령을 SE(2)로 Δ초 적분한 예상 pose
-   주변 patch `H_future`, 현재+미래를 포함하는 wide patch를 비교한다. Current/Future는
-   동일한 teacher encoder를 공유한다. Wide와 Current+Future의 **policy 입력 총 terrain
-   latent 차원**을 맞춘다. teacher 정책은 PPO로 학습하고 확인된 checkpoint를 고정한 뒤
-   student distillation에 사용한다.
-5. Student는 `L_current = ||g(h_t)-sg(z_current^T)||²`와
-   `L_future = ||g(h_future)-sg(z_future^T)||²`를 학습한다. JEPA target의 실제 도착 pose와
-   teacher의 명령 외삽 pose가 어긋나므로, 같은 에피소드·명령 유지·위치/yaw 오차·teacher
-   patch 가시성을 검사한다. 유효 표본만 미래 손실에 쓰고 **유효 수로 정규화하며 mask
-   coverage를 기록**한다. 현재 distillation은 이 mask와 무관하게 학습한다.
-6. 초기 student 총 손실은 `λc L_current + m λf L_future + m λJ L_JEPA`.
-   세 계수·horizon·mask 허용오차는 configclass. Copy predictor `h_future=h_t`를
-   항상 비교해 시간창 겹침으로 생기는 복사 해를 탐지한다.
-7. Policy는 `[proprio, command, z_current, z_future]`를 입력으로 하는 MLP PPO.
-   PPO actor·critic과 teacher encoder의 파라미터, 학습 및 동결 경계를 명시적으로 분리한다.
-   실기 추론에는 Depth, proprio, command만 사용하며 EMA target·teacher heightmap은 제외한다.
+4. **2026-10-08 변경:** 고정 teacher는 `Current-EasyStart` seed 42의
+   `model_2999.pt`이다. 현재 187점 heightmap을 `187→128→32` encoder로
+   압축한 `z_current^T`를 주 목표로 한다. Current+Future는 고정 평가에서
+   기준에 미달했으므로 비교 기록으로만 보관한다. 연구 주장은 명령 외삽
+   미래 지형 예견에서 **카메라 사각지대의 현재 지형을 과거 Depth로 기억·예측해
+   보행**하는 것으로 전환한다. 계단 직전에는 수직면이 보이지만 발을 디딜
+   윗면이 시야에서 사라지는 상황이 대표 사례다.
+5. Student는 10 Hz Depth→기존 CNN→GRU context `h_t`→terrain head `g`로
+   `ẑ_current`를 만든다. 주 손실은 고정 teacher `z_current^T`의 latent 증류와
+   teacher 행동 증류다. `z_future` 증류는 기본 꺼짐의 선택 ablation이다.
+6. JEPA predictor는 과거 context와 명령(또는 실제 이동량)을 조건으로
+   Δ초 뒤 Depth의 EMA target 임베딩을 예측하는 보조 손실이다. 같은
+   에피소드·명령 유지 mask를 적용하고 유효 표본 수로 정규화한다. 역할은
+   사각지대를 채우는 기억 형성이며 copy predictor 비교를 유지한다.
+   초기 계수 `λ_z=1, λ_a=1, λ_J=0.1`, Δ=0.5 s는 configclass에 노출한다.
+7. 기본 student 정책은 고정한 teacher head `π_T`에 `[proprio, ẑ_current]`를
+   넣는다. 새 head 학습은 config 옵션으로만 준비한다. teacher head 고정,
+   초기 손실 계수 및 DAgger teacher 행동 혼합 초기값 `β=0`은 사용자 최종
+   확인 대기 항목이다. Student 행동으로 수집한 방문 상태에서 teacher
+   목표를 계산하고 100스텝 truncated BPTT를 쓴다. 실기 추론에는 Depth,
+   proprio, command만 사용하고 EMA target과 특권 heightmap은 제외한다.
 
 ### 연구 실험 순서와 통과 조건
 
@@ -54,6 +64,12 @@
    simulation replay로 적응시킨다. 실기 적응 실험은 로그 확보 후 시작한다.
 
 ### 2026-10-08 Phase 2 teacher 우선순위 및 공정 비교
+
+**2026-10-08 결과에 따른 대체:** Current+Future는 11~13 cm 고정 계단에서
+Current보다 낮아 미리 정한 teacher 기준을 통과하지 못했다. Phase 3
+teacher는 Current-EasyStart seed 42 `model_2999.pt`로 고정한다. Wide와
+Current+Future는 선택 비교 기록으로 남긴다. 아래의 당시 우선순위와
+비교 설계는 결정 이력이며 현재 student 구현의 목표가 아니다.
 
 - Phase 2의 주목표는 Phase 3 depth student가 증류받을 **Current+Future teacher**
   checkpoint를 만드는 것이다. 학생의 공유 terrain encoder는 `z_current`, `z_future`를
