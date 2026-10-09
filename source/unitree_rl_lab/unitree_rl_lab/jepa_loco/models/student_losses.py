@@ -50,24 +50,28 @@ def masked_future_mse(pred: torch.Tensor, target: torch.Tensor,
     return (per_sample * mask).sum() / mask.sum().clamp(min=1)
 
 
-def normalized_jepa_with_copy(pred: torch.Tensor, source: torch.Tensor, target: torch.Tensor,
+def normalized_jepa_with_copy(pred: torch.Tensor, source_online: torch.Tensor,
+                              source_ema: torch.Tensor, target: torch.Tensor,
                               mask: torch.Tensor, variance_floor: float
-                              ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """유효 target의 차원별 배치 분산으로 JEPA와 copy MSE를 함께 정규화한다."""
-    if pred.shape != source.shape or pred.shape != target.shape or pred.ndim != 3 or mask.shape != pred.shape[:2]:
-        raise ValueError("JEPA pred/source/target [T,N,D], mask [T,N]이어야 한다")
+                              ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """같은 EMA 인코더의 t→t+Δ copy와 online→EMA 차이를 같은 분산으로 비교한다."""
+    if (pred.shape != source_online.shape or pred.shape != source_ema.shape or
+            pred.shape != target.shape or pred.ndim != 3 or mask.shape != pred.shape[:2]):
+        raise ValueError("JEPA pred/online/EMA source/target [T,N,D], mask [T,N]이어야 한다")
     if variance_floor <= 0:
         raise ValueError("variance_floor는 양수여야 한다")
     target = target.detach()
     if not mask.any():
         zero = pred.sum() * 0
-        return zero, zero.detach(), zero.detach()
+        return zero, zero.detach(), zero.detach(), zero.detach(), zero.detach()
     target_valid = target[mask]
     variance = target_valid.var(dim=0, unbiased=False)
     scale = variance.clamp_min(variance_floor)
     loss = ((pred[mask] - target_valid).square().mean(dim=0) / scale).mean()
-    copy_loss = ((source.detach()[mask] - target_valid).square().mean(dim=0) / scale).mean()
-    return loss, copy_loss, variance.mean()
+    copy_loss = ((source_ema.detach()[mask] - target_valid).square().mean(dim=0) / scale).mean()
+    copy_online_loss = ((source_online.detach()[mask] - target_valid).square().mean(dim=0) / scale).mean()
+    online_var = source_online.detach()[mask].var(dim=0, unbiased=False).mean()
+    return loss, copy_loss, copy_online_loss, variance.mean(), online_var
 
 
 def distillation_losses(student_z: torch.Tensor, teacher_z: torch.Tensor,

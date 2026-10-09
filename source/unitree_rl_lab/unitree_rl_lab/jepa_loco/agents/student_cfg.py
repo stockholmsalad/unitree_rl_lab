@@ -17,6 +17,8 @@ class StudentTrainCfg:
     lambda_z: float = 1.0
     lambda_a: float = 1.0
     lambda_j: float = 0.1
+    jepa_warmup_iterations: int = 50
+    init_at_random_ep_len: bool = True
     jepa_horizon_s: float = 0.5
     jepa_target: str = "context"  # frame_embedding 후보는 스모크 후 기본값 확정
     jepa_variance_floor: float = 1.0e-6
@@ -48,6 +50,8 @@ class StudentTrainCfg:
             raise NotImplementedError("새 head·future terrain은 확정 후 별도 ablation으로 구현한다")
         if min(self.lambda_z, self.lambda_a, self.lambda_j) < 0:
             raise ValueError("손실 계수는 0 이상이어야 한다")
+        if self.jepa_warmup_iterations < 0:
+            raise ValueError("JEPA warmup iteration은 0 이상이어야 한다")
         if self.jepa_target not in ("context", "frame_embedding"):
             raise ValueError("JEPA target은 context 또는 frame_embedding이어야 한다")
         if self.jepa_variance_floor <= 0 or self.jepa_frame_batch_size < 1:
@@ -72,3 +76,8 @@ class StudentTrainCfg:
             return self.beta_final
         progress = min(max(iteration, 0) / self.beta_decay_iterations, 1.0)
         return self.beta_initial + (self.beta_final - self.beta_initial) * progress
+
+    def effective_lambda_j(self, iteration: int) -> float:
+        if self.jepa_warmup_iterations == 0:
+            return self.lambda_j
+        return self.lambda_j * min(max(iteration, 0) / self.jepa_warmup_iterations, 1.0)

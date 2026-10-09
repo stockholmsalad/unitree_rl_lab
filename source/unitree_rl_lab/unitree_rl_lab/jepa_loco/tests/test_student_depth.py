@@ -6,7 +6,7 @@ from tensordict import TensorDict
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
 from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel
 from unitree_rl_lab.jepa_loco.models.student_batches import (
-    env_batch_indices, jepa_pair_tensors, realized_se2_displacement, select_env_batch,
+    env_batch_indices, initial_episode_lengths, jepa_pair_tensors, realized_se2_displacement, select_env_batch,
 )
 from unitree_rl_lab.jepa_loco.models.student_losses import (
     distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, masked_future_mse, normalized_jepa_with_copy,
@@ -69,20 +69,42 @@ def test_jepa_mask_rejects_resets_and_command_change():
 
 
 def test_normalized_jepa_scale_and_copy_ratio():
-    source = torch.tensor([[[0.0, 1.0]], [[2.0, 3.0]], [[4.0, 5.0]]])
+    source_ema = torch.tensor([[[0.0, 1.0]], [[2.0, 3.0]], [[4.0, 5.0]]])
+    source_online = source_ema + 10
     target = torch.tensor([[[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]]])
-    pred = source + 0.5
+    pred = source_ema + 0.5
     mask = torch.ones(3, 1, dtype=torch.bool)
-    loss, copy, variance = normalized_jepa_with_copy(pred, source, target, mask, 1.0e-6)
-    scaled, scaled_copy, scaled_variance = normalized_jepa_with_copy(
-        pred * 7, source * 7, target * 7, mask, 1.0e-6,
+    loss, copy, copy_online, variance, online_var = normalized_jepa_with_copy(
+        pred, source_online, source_ema, target, mask, 1.0e-6,
+    )
+    scaled, scaled_copy, scaled_online, scaled_variance, scaled_online_var = normalized_jepa_with_copy(
+        pred * 7, source_online * 7, source_ema * 7, target * 7, mask, 1.0e-6,
     )
     torch.testing.assert_close(loss, scaled)
     torch.testing.assert_close(copy, scaled_copy)
+    torch.testing.assert_close(copy_online, scaled_online)
     torch.testing.assert_close(scaled_variance, variance * 49)
-    copy_pred, copy_reference, _ = normalized_jepa_with_copy(source, source, target, mask, 1.0e-6)
+    torch.testing.assert_close(scaled_online_var, online_var * 49)
+    assert copy_online > copy
+    copy_pred, copy_reference, _, _, _ = normalized_jepa_with_copy(
+        source_ema, source_online, source_ema, target, mask, 1.0e-6,
+    )
     torch.testing.assert_close(copy_pred / copy_reference, torch.ones(()))
     assert loss < copy
+
+
+def test_gru_copy_predicts_ema_source_without_jepa_gradient():
+    model = StudentDepthModel(method="gru_copy", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
+    source_online = torch.randn(3, 2, 8, requires_grad=True)
+    source_ema = torch.randn(3, 2, 8)
+    target_ema = torch.randn(3, 2, 8)
+    pred = model.predict(source_online, torch.zeros(3, 2, 3), ema_copy_source=source_ema)
+    loss, copy, _, _, _ = normalized_jepa_with_copy(
+        pred, source_online, source_ema, target_ema, torch.ones(3, 2, dtype=torch.bool), 1.0e-6,
+    )
+    torch.testing.assert_close(loss, copy)
+    assert not loss.requires_grad and pred.grad_fn is None
 
 
 def test_frame_target_uses_only_fresh_future_in_same_episode():
@@ -103,8 +125,13 @@ def test_frame_target_uses_only_fresh_future_in_same_episode():
     valid = torch.zeros_like(fresh)
     valid[horizon:] = mask
     target = model.encode_frame_targets(depth, valid, batch_size=2)
+    source_valid = torch.zeros_like(fresh)
+    source_valid[:-horizon] = mask
+    ema_frames = model.encode_frame_targets(depth, valid | source_valid, batch_size=2)
     assert target.shape == (5, 2, 8)
     torch.testing.assert_close(target[2, 0], model.ema_cnn(depth[2, 0:1])[0])
+    torch.testing.assert_close(ema_frames[0, 0], model.ema_cnn(depth[0, 0:1])[0])
+    torch.testing.assert_close(ema_frames[2, 0], target[2, 0])
     assert torch.count_nonzero(target[2, 1]) == 0
     assert torch.count_nonzero(target[3, 1]) == 0
     assert torch.count_nonzero(target[4, 0]) == 0
@@ -258,6 +285,31 @@ def test_gru_sequence_and_ema_shape():
     assert student.predict(out, torch.zeros(3, 2, 3)).shape == out.shape
 
 
+def test_gru_and_ema_sequence_match_rollout_across_env_resets():
+    model = StudentDepthModel(method="gru_jepa", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
+    depth = torch.rand(5, 3, 2, 8, 8)
+    fresh = torch.tensor([[True, True, True], [False, True, False], [True, False, True],
+                          [True, True, False], [False, False, True]])
+    resets = torch.tensor([[False, False, False], [False, True, False], [False, False, True],
+                           [True, False, False], [False, False, False]])
+    for target in (False, True):
+        sequence, _ = model.encode_sequence(depth, fresh, resets, target=target)
+        state = model.initial_state(3, depth.device)
+        rollout = []
+        for t in range(5):
+            state = torch.where(resets[t, :, None], torch.zeros_like(state), state)
+            value, state = model.encode_step(depth[t], fresh[t], state, target=target)
+            rollout.append(value)
+        torch.testing.assert_close(sequence, torch.stack(rollout))
+    done = torch.zeros(5, 3, dtype=torch.bool)
+    done[1, 1] = True
+    done[2, 2] = True
+    mask = jepa_valid_mask(done, torch.zeros(5, 3, 3), horizon_steps=2, command_tolerance=0.01)
+    assert not mask[0, 1] and not mask[1, 1] and not mask[1, 2]
+    assert mask[0, 0] and mask[2, 1]
+
+
 def test_student_env_matches_current_teacher_except_camera_and_observations():
     teacher = OracleCurrentEasyStartEnvCfg()
     student = StudentDepthEasyStartEnvCfg()
@@ -287,9 +339,24 @@ def test_student_update_defaults_and_invalid_batch_count():
     assert cfg.dagger_beta(500) == 0.0
     assert (cfg.jepa_target_mode, cfg.condition_source) == ("future", "command")
     assert cfg.jepa_target == "context" and cfg.jepa_variance_floor > 0
+    assert cfg.init_at_random_ep_len and cfg.jepa_warmup_iterations == 50
+    assert cfg.effective_lambda_j(0) == 0
+    assert cfg.effective_lambda_j(25) == cfg.lambda_j / 2
+    assert cfg.effective_lambda_j(50) == cfg.lambda_j
+    assert StudentTrainCfg(jepa_warmup_iterations=0).effective_lambda_j(0) == cfg.lambda_j
     try:
         StudentTrainCfg(num_envs=65).validate_training(0.02, 5)
     except ValueError:
         pass
     else:
         raise AssertionError("나누어떨어지지 않는 env 미니배치를 허용했다")
+
+
+def test_initial_episode_lengths_matches_runner_bounds_and_optional_disable():
+    torch.manual_seed(43)
+    lengths = torch.zeros(64, dtype=torch.long)
+    randomized = initial_episode_lengths(lengths, 1000, enabled=True)
+    assert randomized.shape == lengths.shape
+    assert randomized.min() >= 0 and randomized.max() < 1000
+    assert randomized.unique().numel() > 1
+    torch.testing.assert_close(initial_episode_lengths(lengths, 1000, enabled=False), lengths)

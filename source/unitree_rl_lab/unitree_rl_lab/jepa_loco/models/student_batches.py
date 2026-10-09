@@ -5,6 +5,14 @@ from __future__ import annotations
 import torch
 
 
+def initial_episode_lengths(lengths: torch.Tensor, max_episode_length: int,
+                            enabled: bool) -> torch.Tensor:
+    """rsl-rl init_at_random_ep_len와 동일한 [0,max) 정수 초기 길이."""
+    if lengths.ndim != 1 or lengths.dtype != torch.long or max_episode_length < 1:
+        raise ValueError("episode lengths는 [N] long이고 max_episode_length는 양수여야 한다")
+    return torch.randint_like(lengths, high=max_episode_length) if enabled else lengths.clone()
+
+
 def env_batch_indices(num_envs: int, num_mini_batches: int, device: torch.device,
                       shuffle: bool = False) -> list[torch.Tensor]:
     if num_mini_batches < 1 or num_envs < num_mini_batches or num_envs % num_mini_batches:
