@@ -79,8 +79,10 @@ class StudentDepthModel(nn.Module):
             if module is not None:
                 module.requires_grad_(False)
 
-    def initial_state(self, batch: int, device: torch.device) -> torch.Tensor | None:
-        return None if self.backbone is None else self.backbone.initial_state(batch, device)
+    def initial_state(self, batch: int, device: torch.device) -> torch.Tensor:
+        if self.backbone is None:
+            return torch.zeros(batch, self.context_dim, device=device)
+        return self.backbone.initial_state(batch, device)
 
     def encode_step(self, depth: torch.Tensor, fresh: torch.Tensor,
                     state: torch.Tensor | None, target: bool = False
@@ -89,7 +91,14 @@ class StudentDepthModel(nn.Module):
         backbone = self.ema_backbone if target else self.backbone
         projection = self.ema_frame_projection if target else self.frame_projection
         if self.method == "no_memory":
-            return projection(cnn(depth.float())), None
+            if state is None:
+                state = self.initial_state(depth.shape[0], depth.device)
+            if not fresh.any():
+                return state, state
+            updated = projection(cnn(depth[fresh].float()))
+            # index_copy는 이전 프레임의 gradient graph를 제자리에서 바꾸지 않는다.
+            state = state.index_copy(0, fresh.nonzero(as_tuple=True)[0], updated)
+            return state, state
         if state is None:
             state = backbone.initial_state(depth.shape[0], depth.device)
         features = torch.zeros(depth.shape[0], cnn.feat_dim, device=depth.device)
@@ -152,7 +161,8 @@ class StudentInferencePolicy:
         self.teacher = FrozenCurrentTeacher(checkpoint["teacher_state_dict"]).to(device)
         self.state: torch.Tensor | None = None
         self.last_z: torch.Tensor | None = None
-        self.is_recurrent = self.model.backbone is not None
+        # no_memory도 10 Hz 프레임을 유지하는 상태가 있으므로 종료 시 초기화한다.
+        self.is_recurrent = True
 
     @torch.inference_mode()
     def __call__(self, obs: TensorDict) -> torch.Tensor:

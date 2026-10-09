@@ -17,6 +17,10 @@ parser.add_argument("--num_envs", type=int, required=True)
 parser.add_argument("--max_iterations", type=int, required=True)
 parser.add_argument("--seed", type=int, default=43)
 parser.add_argument("--output_dir", required=True)
+parser.add_argument("--num_mini_batches", type=int)
+parser.add_argument("--num_learning_epochs", type=int)
+parser.add_argument("--jepa_target_mode", choices=("future", "present_from_past"))
+parser.add_argument("--condition_source", choices=("command", "realized_displacement"))
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -27,11 +31,15 @@ import time  # noqa: E402
 
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
+from isaaclab.utils import math as math_utils  # noqa: E402
 from torch.utils.tensorboard import SummaryWriter  # noqa: E402
 
 import unitree_rl_lab.tasks  # noqa: E402, F401
 from unitree_rl_lab.jepa_loco.agents.student_cfg import StudentTrainCfg  # noqa: E402
 from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel  # noqa: E402
+from unitree_rl_lab.jepa_loco.models.student_batches import (  # noqa: E402
+    env_batch_indices, jepa_pair_tensors, select_env_batch,
+)
 from unitree_rl_lab.jepa_loco.models.student_losses import (  # noqa: E402
     distillation_losses, jepa_valid_mask, masked_future_mse,
 )
@@ -39,8 +47,11 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
 
 def main() -> None:
+    overrides = {key: value for key in ("num_mini_batches", "num_learning_epochs",
+                                         "jepa_target_mode", "condition_source")
+                 if (value := getattr(args, key)) is not None}
     train = StudentTrainCfg(method=args.method, num_envs=args.num_envs,
-                            max_iterations=args.max_iterations)
+                            max_iterations=args.max_iterations, **overrides)
     task = "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     env_cfg = parse_env_cfg(task, device=args.device, num_envs=train.num_envs)
     env_cfg.seed = args.seed
@@ -73,13 +84,18 @@ def main() -> None:
     ema_state = model.initial_state(env.num_envs, device)
 
     for iteration in range(train.max_iterations):
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         iteration_start = time.perf_counter()
         beta = train.dagger_beta(iteration)
-        h0 = None if state is None else state.detach().clone()
-        h0_ema = None if ema_state is None else ema_state.detach().clone()
+        h0 = state.detach().clone()
+        h0_ema = ema_state.detach().clone()
         memory = {key: [] for key in ("depth", "fresh", "policy", "command", "teacher_z",
                                        "teacher_action", "done")}
+        if train.condition_source == "realized_displacement" and train.method in ("gru_jepa", "gru_copy"):
+            memory["pose"] = []
         metrics = {}
+        teacher_action_count = 0
         with torch.inference_mode():
             for _ in range(train.rollout_steps):
                 fresh = obs["depth_fresh"][:, 0] > 0.5
@@ -90,19 +106,23 @@ def main() -> None:
                 student_action = teacher.action_from_latent(obs["policy"], student_z)
                 teacher_action = teacher.action_from_latent(obs["policy"], teacher_z)
                 mixed = torch.rand(env.num_envs, device=device) < beta
+                teacher_action_count += int(mixed.sum().item())
                 action = torch.where(mixed[:, None], teacher_action, student_action)
                 memory["depth"].append(obs["depth"].clone())
                 memory["fresh"].append(fresh.clone())
                 memory["policy"].append(obs["policy"].clone())
                 memory["command"].append(env.command_manager.get_command("base_velocity").clone())
+                if "pose" in memory:
+                    robot = env.scene["robot"].data
+                    yaw = math_utils.euler_xyz_from_quat(robot.root_quat_w)[2]
+                    memory["pose"].append(torch.cat((robot.root_pos_w[:, :2], yaw[:, None]), dim=-1).clone())
                 memory["teacher_z"].append(teacher_z.clone())
                 memory["teacher_action"].append(teacher_action.clone())
                 obs, _, terminated, truncated, extras = env.step(action)
                 done = (terminated | truncated).bool()
                 memory["done"].append(done.clone())
-                if state is not None:
-                    state[done] = 0
-                    ema_state[done] = 0
+                state[done] = 0
+                ema_state[done] = 0
                 for name, value in extras.get("log", {}).items():
                     if (name.startswith("Curriculum/terrain_level/") or
                             "obstacle_clear_rate" in name):
@@ -110,46 +130,71 @@ def main() -> None:
         batch = {key: torch.stack(values) for key, values in memory.items()}
         resets = torch.zeros_like(batch["done"])
         resets[1:] = batch["done"][:-1]
-        context, _ = model.encode_sequence(batch["depth"], batch["fresh"], resets, h0)
-        student_z = model.terrain_latent(context)
-        student_action = teacher.action_from_latent(batch["policy"], student_z)
-        latent_loss, action_loss = distillation_losses(
-            student_z, batch["teacher_z"], student_action, batch["teacher_action"], mean, std,
-        )
-        jepa_loss = context.new_zeros(())
-        coverage = 0.0
+        mask_all = None
         if train.method in ("gru_jepa", "gru_copy") and train.lambda_j:
-            with torch.no_grad():
-                target_context, _ = model.encode_sequence(
-                    batch["depth"], batch["fresh"], resets, h0_ema, target=True,
+            mask_all = jepa_valid_mask(batch["done"], batch["command"],
+                                       horizon_steps, train.command_tolerance)
+        update_keys = ("Loss/latent", "Loss/action", "Loss/jepa", "Loss/total",
+                       "Diagnosis/action_abs_error", "Diagnosis/z_abs_error", "Diagnosis/latent_std")
+        sums = {key: 0.0 for key in update_keys}
+        for _ in range(train.num_learning_epochs):
+            env_batches = env_batch_indices(env.num_envs, train.num_mini_batches, device, shuffle=True)
+            for ids in env_batches:
+                mini, mini_resets, mini_h0, mini_h0_ema, mini_mask = select_env_batch(
+                    batch, resets, h0, h0_ema, ids, mask_all,
                 )
-            mask = jepa_valid_mask(batch["done"], batch["command"],
-                                   horizon_steps, train.command_tolerance)
-            pred = model.predict(context[:-horizon_steps], batch["command"][:-horizon_steps])
-            jepa_loss = masked_future_mse(pred, target_context[horizon_steps:], mask)
-            coverage = mask.float().mean().item()
-        total = train.lambda_z * latent_loss + train.lambda_a * action_loss + train.lambda_j * jepa_loss
-        optimizer.zero_grad(set_to_none=True)
-        total.backward()
-        torch.nn.utils.clip_grad_norm_((p for p in model.parameters() if p.requires_grad), train.max_grad_norm)
-        optimizer.step()
-        model.update_ema(train.ema_tau)
-        state = None if state is None else state.detach()
-        ema_state = None if ema_state is None else ema_state.detach()
-
-        logs = {"Loss/latent": latent_loss.item(), "Loss/action": action_loss.item(),
-                "Loss/jepa": jepa_loss.item(), "Loss/total": total.item(),
-                "Diagnosis/action_abs_error": (student_action.detach() - batch["teacher_action"]).abs().mean().item(),
-                "Diagnosis/z_abs_error": (student_z.detach() - batch["teacher_z"]).abs().mean().item(),
-                "Diagnosis/latent_std": student_z.detach().std(dim=(0, 1)).mean().item(),
-                "Diagnosis/jepa_mask_coverage": coverage, "DAgger/beta": beta, **metrics}
+                context, _ = model.encode_sequence(mini["depth"], mini["fresh"], mini_resets, mini_h0)
+                student_z = model.terrain_latent(context)
+                student_action = teacher.action_from_latent(mini["policy"], student_z)
+                latent_loss, action_loss = distillation_losses(
+                    student_z, mini["teacher_z"], student_action, mini["teacher_action"], mean, std,
+                )
+                jepa_loss = context.new_zeros(())
+                if mini_mask is not None:
+                    with torch.no_grad():
+                        target_context, _ = model.encode_sequence(
+                            mini["depth"], mini["fresh"], mini_resets, mini_h0_ema, target=True,
+                        )
+                    source, target, condition = jepa_pair_tensors(
+                        context, target_context, mini["command"], mini.get("pose"), horizon_steps,
+                        train.jepa_target_mode, train.condition_source,
+                    )
+                    jepa_loss = masked_future_mse(model.predict(source, condition), target, mini_mask)
+                total = train.lambda_z * latent_loss + train.lambda_a * action_loss + train.lambda_j * jepa_loss
+                optimizer.zero_grad(set_to_none=True)
+                total.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    (p for p in model.parameters() if p.requires_grad), train.max_grad_norm,
+                )
+                optimizer.step()
+                # EMA target이 방금 변경된 online encoder를 바로 따라가도록 매 step 갱신한다.
+                model.update_ema(train.ema_tau)
+                values = (latent_loss.item(), action_loss.item(), jepa_loss.item(), total.item(),
+                          (student_action.detach() - mini["teacher_action"]).abs().mean().item(),
+                          (student_z.detach() - mini["teacher_z"]).abs().mean().item(),
+                          student_z.detach().std(dim=(0, 1)).mean().item())
+                for key, value in zip(update_keys, values):
+                    sums[key] += value
+        state = state.detach()
+        ema_state = ema_state.detach()
+        update_count = train.num_learning_epochs * train.num_mini_batches
+        logs = {key: value / update_count for key, value in sums.items()}
+        logs.update({"Diagnosis/jepa_mask_coverage": 0.0 if mask_all is None else mask_all.float().mean().item(),
+                     "DAgger/beta": beta,
+                     "DAgger/teacher_action_rate": teacher_action_count / (env.num_envs * train.rollout_steps),
+                     "Perf/optimizer_steps": update_count, **metrics})
+        if device.type == "cuda":
+            logs["Perf/gpu_peak_allocated_gib"] = torch.cuda.max_memory_allocated(device) / 2**30
+            logs["Perf/gpu_peak_reserved_gib"] = torch.cuda.max_memory_reserved(device) / 2**30
         logs["Perf/iteration_s"] = time.perf_counter() - iteration_start
         for name, value in logs.items():
             writer.add_scalar(name, value, iteration)
         print(f"STUDENT_ITER {iteration + 1}/{train.max_iterations} "
-              f"method={train.method} loss={total.item():.5f} "
-              f"z={latent_loss.item():.5f} action={action_loss.item():.5f} "
-              f"jepa={jepa_loss.item():.5f} mask={coverage:.3f} "
+              f"method={train.method} loss={logs['Loss/total']:.5f} "
+              f"z={logs['Loss/latent']:.5f} action={logs['Loss/action']:.5f} "
+              f"jepa={logs['Loss/jepa']:.5f} mask={logs['Diagnosis/jepa_mask_coverage']:.3f} "
+              f"teacher_rate={logs['DAgger/teacher_action_rate']:.3f} updates={update_count} "
+              f"peak_gib={logs.get('Perf/gpu_peak_allocated_gib', 0.0):.2f} "
               f"iteration_s={logs['Perf/iteration_s']:.2f}", flush=True)
         if (iteration + 1) % train.save_interval == 0 or iteration + 1 == train.max_iterations:
             torch.save({"model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),

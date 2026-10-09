@@ -5,6 +5,9 @@ from tensordict import TensorDict
 
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
 from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel
+from unitree_rl_lab.jepa_loco.models.student_batches import (
+    env_batch_indices, jepa_pair_tensors, realized_se2_displacement, select_env_batch,
+)
 from unitree_rl_lab.jepa_loco.models.student_losses import (
     distillation_losses, jepa_valid_mask, masked_future_mse, normalized_latent_mse,
 )
@@ -79,6 +82,115 @@ def test_no_memory_current_frame_independent_of_history():
     torch.testing.assert_close(out_a[-1], out_b[-1])
 
 
+def test_no_memory_rollout_matches_sequence_with_fresh_and_reset():
+    student = StudentDepthModel(method="no_memory", image_hw=(8, 8), cnn_channels=(4,),
+                                cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
+    depth = torch.rand(5, 2, 2, 8, 8)
+    fresh = torch.tensor([[False, True], [True, False], [False, False],
+                          [False, True], [True, False]])
+    resets = torch.tensor([[False, False], [False, False], [False, True],
+                           [True, False], [False, False]])
+    seen_batch_sizes = []
+    hook = student.cnn.register_forward_hook(lambda _module, inputs, _output: seen_batch_sizes.append(inputs[0].shape[0]))
+    sequence, _ = student.encode_sequence(depth, fresh, resets)
+    hook.remove()
+    assert sum(seen_batch_sizes) == int(fresh.sum())
+    state = student.initial_state(2, depth.device)
+    rollout = []
+    for t in range(5):
+        state = torch.where(resets[t, :, None], torch.zeros_like(state), state)
+        value, state = student.encode_step(depth[t], fresh[t], state)
+        rollout.append(value)
+    torch.testing.assert_close(sequence, torch.stack(rollout))
+    assert torch.count_nonzero(sequence[0, 0]) == 0
+    assert torch.count_nonzero(sequence[2, 1]) == 0
+    torch.testing.assert_close(sequence[1, 0], sequence[2, 0])
+
+
+def test_env_minibatch_slices_states_resets_and_mask():
+    batch = {"depth": torch.arange(4 * 8 * 2).reshape(4, 8, 2),
+             "command": torch.arange(4 * 8 * 3).reshape(4, 8, 3)}
+    resets = torch.arange(4 * 8).reshape(4, 8) % 3 == 0
+    mask = torch.arange(3 * 8).reshape(3, 8) % 2 == 0
+    h0 = torch.arange(8 * 5).reshape(8, 5)
+    h0_ema = -h0
+    shuffled = torch.cat(env_batch_indices(8, 4, h0.device, shuffle=True))
+    torch.testing.assert_close(shuffled.sort().values, torch.arange(8))
+    for ids in env_batch_indices(8, 4, h0.device):
+        mini, r, h, e, m = select_env_batch(batch, resets, h0, h0_ema, ids, mask)
+        for key in batch:
+            torch.testing.assert_close(mini[key], batch[key][:, ids])
+        torch.testing.assert_close(r, resets[:, ids])
+        torch.testing.assert_close(h, h0[ids])
+        torch.testing.assert_close(e, h0_ema[ids])
+        torch.testing.assert_close(m, mask[:, ids])
+
+
+def test_single_minibatch_single_epoch_matches_full_loss_and_gradient():
+    torch.manual_seed(7)
+    model = StudentDepthModel(method="gru_jepa", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8,
+                              terrain_dim=3, terrain_hidden_dim=8)
+    depth = torch.rand(3, 2, 2, 8, 8)
+    batch = {"depth": depth, "fresh": torch.tensor([[True, True], [False, True], [True, False]]),
+             "teacher_z": torch.rand(3, 2, 3), "command": torch.rand(3, 2, 3),
+             "pose": torch.zeros(3, 2, 3), "teacher_action": torch.rand(3, 2, 2)}
+    resets = torch.tensor([[False, False], [False, False], [True, False]])
+    h0 = model.initial_state(2, depth.device)
+    mask = torch.tensor([[True, True], [False, True]])
+    fixed_head = torch.rand(3, 2)
+
+    def loss(data, reset, initial, initial_ema, valid):
+        context, _ = model.encode_sequence(data["depth"], data["fresh"], reset, initial)
+        z = model.terrain_latent(context)
+        latent, action = distillation_losses(z, data["teacher_z"], z @ fixed_head,
+                                              data["teacher_action"], torch.zeros(3), torch.ones(3))
+        with torch.no_grad():
+            target, _ = model.encode_sequence(data["depth"], data["fresh"], reset, initial_ema, target=True)
+        source, target, condition = jepa_pair_tensors(context, target, data["command"], None, 1,
+                                                       "future", "command")
+        jepa = masked_future_mse(model.predict(source, condition), target, valid)
+        return latent + action + 0.1 * jepa
+
+    whole = loss(batch, resets, h0, h0, mask)
+    whole.backward()
+    gradients = [p.grad.clone() for p in model.parameters() if p.grad is not None]
+    model.zero_grad(set_to_none=True)
+    ids = env_batch_indices(2, 1, depth.device)[0]
+    mini, mini_reset, mini_h0, mini_h0_ema, mini_mask = select_env_batch(batch, resets, h0, h0, ids, mask)
+    single = loss(mini, mini_reset, mini_h0, mini_h0_ema, mini_mask)
+    single.backward()
+    torch.testing.assert_close(whole, single)
+    for before, after in zip(gradients, (p.grad for p in model.parameters() if p.grad is not None)):
+        torch.testing.assert_close(before, after)
+
+
+def test_realized_se2_displacement_rotates_and_wraps_yaw():
+    start = torch.tensor([[1.0, 2.0, torch.pi / 2], [0.0, 0.0, 3.13]])
+    end = torch.tensor([[1.0, 3.0, torch.pi / 2], [1.0, 0.0, -3.13]])
+    delta = realized_se2_displacement(start, end)
+    torch.testing.assert_close(delta[0], torch.tensor([1.0, 0.0, 0.0]), atol=1e-6, rtol=0)
+    assert 0 < delta[1, 2] < 0.03
+
+
+def test_jepa_target_modes_and_condition_sources():
+    context = torch.arange(6.).reshape(3, 2, 1).expand(3, 2, 4)
+    command = torch.ones(3, 2, 3)
+    pose = torch.zeros_like(command)
+    pose[1:, :, 0] = 0.2
+    for mode in ("future", "present_from_past"):
+        source, target, condition = jepa_pair_tensors(context, context + 10, command, pose, 1,
+                                                       mode, "command")
+        assert source.shape == target.shape == (2, 2, 4)
+        torch.testing.assert_close(source, context[:-1])
+        torch.testing.assert_close(target, context[1:] + 10)
+        torch.testing.assert_close(condition, command[:-1])
+        _, _, displacement = jepa_pair_tensors(context, context, command, pose, 1,
+                                                 mode, "realized_displacement")
+        assert displacement.shape == (2, 2, 3)
+        torch.testing.assert_close(displacement[0, :, 0], torch.full((2,), 0.2))
+
+
 def test_gru_sequence_and_ema_shape():
     student = StudentDepthModel(method="gru_jepa")
     depth = torch.rand(3, 2, 2, 64, 112)
@@ -111,3 +223,18 @@ def test_student_horizon_and_dagger_schedule():
     assert cfg.dagger_beta(0) == 0.5
     assert cfg.dagger_beta(5) == 0.25
     assert cfg.dagger_beta(10) == 0.0
+
+
+def test_student_update_defaults_and_invalid_batch_count():
+    cfg = StudentTrainCfg(num_envs=64)
+    assert (cfg.num_mini_batches, cfg.num_learning_epochs) == (4, 2)
+    assert cfg.dagger_beta(0) == 1.0
+    assert cfg.dagger_beta(250) == 0.5
+    assert cfg.dagger_beta(500) == 0.0
+    assert (cfg.jepa_target_mode, cfg.condition_source) == ("future", "command")
+    try:
+        StudentTrainCfg(num_envs=65).validate_training(0.02, 5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("나누어떨어지지 않는 env 미니배치를 허용했다")
