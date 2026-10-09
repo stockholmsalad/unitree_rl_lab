@@ -49,6 +49,17 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
    EMA CNN `frame_embedding` 중 선택한다. 후자는 새 프레임 시점만 사용한다.
    `frame_embedding` 기본값 전환과 λ_J 조정은 256 env·20 iteration 비교
    결과를 보고 사용자가 확정한다.
+   **2026-10-09 Phase 3 보정:** 학습 env 생성 직후 `episode_length_buf`를
+   `[0,max_episode_length)` 균등 정수로 초기화한다
+   (`init_at_random_ep_len=True`, 평가에는 적용하지 않음). 에피소드 1000스텝과
+   rollout 100스텝의 동기 timeout을 분산시키기 위함이다. JEPA의 유효 계수는
+   첫 50 iteration 동안 0→설정 λ_J로 선형 증가시키고 `Loss/lambda_j`로 기록한다.
+   `jepa_copy_loss`는 **같은 EMA 인코더**의 현재/미래 표현
+   `h̄_t`/`h̄_{t+Δ}`의 정규화 MSE다. `frame_embedding`이면 양쪽 모두
+   EMA CNN(+projection) 표현이다. online `h_t`와 EMA 미래 target 간 MSE는
+   `jepa_copy_online_loss`로 별도 기록한다. `gru_copy`는 EMA 현재 표현을
+   항등 예측으로 사용하므로 JEPA 항에서 online encoder로 기울기가 흐르지
+   않는다. 이 비교군의 행동 학습은 GRU 증류 손실로만 진행된다.
    2026-10-09부터 JEPA 목표 시점(`future`/`present_from_past`)과 predictor 조건
    (`command`/`realized_displacement`)도 설정으로 선택한다. 기본 조건은 `command`다.
    실현 변위는 시작 몸통 좌표계의 SE(2) 변위이며 yaw는 ±π에서 wrap한다.

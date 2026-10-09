@@ -1178,3 +1178,57 @@ conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py -
 # ★ pilab
 conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method gru_jepa --jepa_target frame_embedding --num_envs 256 --max_iterations 20 --seed 43 --output_dir results/jepa_loco/student/jepa_target_pilot_s43_frame_embedding --headless
 ```
+
+## 2026-10-09 — Student timeout 동기화·EMA copy 기준·JEPA warmup
+
+사용자 확인: pilab GRU s43의 `Loss/latent > 0.5` iteration은
+1, 11, 21, …, 71로 정확히 10 iteration 주기이며 피크는 4.20→1.48로
+감소했다. 에피소드 최대 길이 1000 제어 스텝과 rollout 100스텝이
+맞물리는데 student 학습은 `episode_length_buf`를 0으로 시작시켜
+모든 env의 timeout이 동기화됐다. rsl-rl `OnPolicyRunner.learn`의
+`init_at_random_ep_len`과 같은 방식으로 **학습 env 생성 직후**
+`episode_length_buf ~ Uniform{0,…,max_episode_length−1}`로 초기화한다.
+`StudentTrainCfg.init_at_random_ep_len=True`로 기본 켜고 평가에는
+적용하지 않는다. 첫 rollout의 timeout 경험 env 비율과 한 제어
+스텝의 최대 동시 timeout 비율을 출력·TensorBoard 기록한다.
+
+pilab 256 env·20 iteration context 파일럿의 기존
+`Diagnosis/jepa_copy_loss=438~858`, `pred_over_copy≈0.001`은
+online 현재 context와 EMA 미래 context를 비교한 값이다. 두 인코더의
+offset이 섞여 순수한 시간 복사 기준이 아니므로 **이전 copy 수치는
+새 copy 기준과 비교하지 않는다**. 같은 파일럿에서 target 분산은
+`1.8e−4~4.0e−4`, `λ_J×JEPA/latent=1.65~2.49`였다.
+
+새 `Diagnosis/jepa_copy_loss`는 같은 EMA 인코더의 시점 t와
+t+Δ를 같은 mask와 EMA 미래 target 분산으로 정규화한 MSE다.
+context target은 EMA GRU 상태 두 시점, frame target은 EMA CNN
+(필요 시 같은 projection) 두 시점이다. 이전 online→EMA 차이는
+`Diagnosis/jepa_copy_online_loss`에 보존한다. 또한 유효 표본의
+online context 차원별 분산 평균을
+`Diagnosis/jepa_online_context_var`로 기록해 EMA target 분산과
+함께 본다. `gru_copy`는 예측값 자체를 EMA 현재 표현으로 설정한다.
+따라서 JEPA 손실과 새 copy 손실은 같고 `pred_over_copy=1`이다.
+이 항은 online 모델로 gradient를 보내지 않으며 `gru_copy`의 정책
+학습은 latent·행동 증류에 의해 진행된다. `Loss/total`에는 copy
+상수항이 포함되므로 `gru_copy`와 다른 조건의 총손실만 비교하지 않는다.
+
+`StudentTrainCfg.jepa_warmup_iterations=50`으로 유효 λ_J를 iteration
+0에서 0, iteration 50에서 설정 λ_J까지 선형 증가시킨다.
+`Loss/lambda_j`와 `Diagnosis/jepa_weighted_over_latent`는 이 **유효
+계수**를 사용한다. 초기의 큰 정규화 JEPA 손실이 미학습 terrain
+latent 증류를 바로 압도하지 않도록 하는 설정이다.
+
+Z790 `env_test` GRU+JEPA context 64 env·2 iteration 스모크:
+첫 rollout의 timeout 경험 env 비율은 **0.094**, 한 제어 스텝의 최대
+동시 timeout 비율은 **0.031**로, 100% 동기 reset이 사라졌다.
+`Loss/lambda_j`는 iteration 0/1에서 0.000/0.002였다. 새 EMA copy는
+각각 10.776/2.468인 반면 기존 online→EMA copy는
+2281.232/6338.020이었다. `pred_over_copy`는 39.008/291.962로,
+이 초기 predictor는 실제 EMA 자기복사보다 아직 나쁘다. 이 짧은
+스모크는 비교 지표의 의미와 실행 경로를 확인한 것이며, 예측 성능
+결론은 아니다.
+`gru_copy` + `frame_embedding` 64 env·1 iteration도 통과했다.
+JEPA와 EMA copy 손실은 각각 **2.44549**로 같았고,
+`pred_over_copy=1.000`; online→EMA copy는 685.906이었다.
+Isaac 앱 내부 전체 테스트는 **102개 통과**했다. 학습 코드·테스트
+검증만 수행했고 본 학습은 시작하지 않았다.
