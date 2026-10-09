@@ -1033,3 +1033,74 @@ seed 43/44 각 4 env·50스텝 데이터와 40개 표본으로 파이프라인
 실패는 첫 학습 스텝 전에 발생했으며, 이전의 네 비교군 순차 스모크
 완료 사실을 뒤집지 않는다. GPU를 사용하는 검증은 이후 한 번에
 한 Isaac 앱만 실행한다.
+
+## 2026-10-09 — Phase 3 student 본 학습 전 효율·안정성 수정
+
+사용자 결정에 따라 100스텝 rollout의 시간축을 유지하고 env 축을 4개로
+나누어 2 epoch 학습한다. 2048 env 기준 rollout당 optimizer step은 1회에서
+8회로 늘어난다. `h0`, EMA `h0`, reset, JEPA mask 및 모든 목표 tensor를
+같은 env 인덱스로 자른다. EMA는 **각 optimizer step 직후** 갱신한다.
+각 미니배치의 target이 직전 online 업데이트를 반영하도록 하고,
+iteration 전체에 대해 target을 오래 고정하지 않기 위한 결정이다.
+각 epoch마다 env 인덱스를 새로 섞고, 시간축은 그대로 둔다.
+
+`no_memory`는 10 Hz 새 depth 프레임에서만 CNN·projection을 계산하고,
+그 사이 제어 스텝에는 마지막 표현을 유지한다. 종료 후 첫 새 프레임 전에는
+0이다. 이 상태는 시간에 따른 시각 특징을 합치지 않으며, GRU 비교의
+depth 갱신 빈도와 계산 예산을 맞춘다. 평가 정책도 종료 시 이 상태를
+초기화한다.
+
+DAgger β는 1.0에서 시작해 500 iteration 동안 0까지 선형 감소한다.
+초기 student 표현이 미학습 상태일 때 teacher 방문 분포로 시작하기 위한
+결정이다. `DAgger/beta`와 rollout에서 실제 teacher 행동을 선택한 비율
+`DAgger/teacher_action_rate`를 함께 기록한다.
+
+JEPA 목표 모드는 `future`(기본)와 `present_from_past`를 설정으로 둔다.
+두 모드 모두 고정 Δ에 대해 `(t−Δ,t)` context 쌍, 같은 에피소드·명령 유지
+mask, copy predictor를 사용한다. 따라서 **동일 rollout에서 모드 이름만
+바꾸면 표본과 수식이 같다**. 독립 ablation으로 해석하지 않는다.
+조건은 `command`(기본) 또는 시작 시각 몸통 좌표계의
+`realized_displacement=(Δx,Δy,Δyaw)`를 선택한다. 후자는 yaw
+wrap-around를 적용한다. 기본 command는 종전 §4.1의 실현 변위 원안과
+다르며, 추론 시 실제 미래 이동량을 알 수 없다는 점 때문에 기본값으로
+유지한다. 실현 변위 조건은 학습용 진단·ablation이고 실기 온라인
+predictor 조건으로 바로 사용할 수 없다.
+
+설정은 `StudentTrainCfg`에 노출했다. GPU 메모리는 학습 로그의
+`Perf/gpu_peak_allocated_gib`와 `Perf/gpu_peak_reserved_gib`에 PyTorch
+iteration peak로 기록한다. Isaac renderer를 포함한 전체 GPU 점유량은
+별도 `nvidia-smi` 측정이 필요하다. pilab의 conda 환경은
+`env_isaaclab`, Z790은 `env_test`다. pilab 2048 env·1 iteration
+실측 전에는 조건당 본 학습 예상 시간을 확정하지 않는다.
+
+Z790 `env_test`에서 변경 후 네 비교군 각각 64 env·2 iteration 스모크가
+완료됐다. 모두 rollout당 8 업데이트, 실제 teacher 행동 사용 비율은
+iteration 1에서 1.000, iteration 2에서 0.998이었다. 두 번째 iteration의
+시간은 no_memory 6.37 s, GRU 6.18 s, GRU+JEPA 6.26 s,
+GRU+copy 6.85 s였다. 두 번째 iteration PyTorch peak allocated는
+각각 약 0.61, 0.61, 0.62, 0.62 GiB다. 이는 64 env 로컬 검증치이며
+pilab 2048 env의 시간·전체 VRAM 추정에 외삽하지 않는다.
+`present_from_past` + `realized_displacement` 조합도 GRU+JEPA
+64 env·1 iteration에서 완료됐다(mask 0.999, 8 업데이트).
+변경 후 Isaac 앱 내부 전체 테스트는 **96개 통과**했다. 여기에는
+미니배치 1개·1 epoch의 전체 손실/gradient 동치, 상태·reset·mask
+슬라이스, no_memory 갱신 gate와 rollout/sequence 일치, SE(2) yaw
+wrap-around가 포함된다.
+pilab 2048 env·1 iteration `no_memory` 및 `gru_jepa` 측정은 사용자가
+직접 실행하기로 했으며 값은 아직 미수집이다.
+
+pilab 측정은 teacher checkpoint와 고정 통계 파일을 먼저 같은 상대 경로에
+놓은 뒤 아래 명령을 **순차로** 실행한다. 로그의 `iteration_s`와
+`peak_gib`는 각각 학습 iteration 시간과 PyTorch peak allocated다.
+Isaac 렌더러를 포함한 전체 GPU peak는 실행 중 `nvidia-smi`로 따로
+기록한다.
+
+```bash
+# ★ pilab
+conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method no_memory --num_envs 2048 --max_iterations 1 --seed 43 --output_dir /tmp/student_benchmark_no_memory --headless
+```
+
+```bash
+# ★ pilab
+conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method gru_jepa --num_envs 2048 --max_iterations 1 --seed 43 --output_dir /tmp/student_benchmark_gru_jepa --headless
+```

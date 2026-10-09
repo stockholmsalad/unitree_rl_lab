@@ -42,11 +42,20 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
    에피소드·명령 유지 mask를 적용하고 유효 표본 수로 정규화한다. 역할은
    사각지대를 채우는 기억 형성이며 copy predictor 비교를 유지한다.
    초기 계수 `λ_z=1, λ_a=1, λ_J=0.1`, Δ=0.5 s는 configclass에 노출한다.
+   2026-10-09부터 JEPA 목표 시점(`future`/`present_from_past`)과 predictor 조건
+   (`command`/`realized_displacement`)도 설정으로 선택한다. 기본 조건은 `command`다.
+   실현 변위는 시작 몸통 좌표계의 SE(2) 변위이며 yaw는 ±π에서 wrap한다.
+   고정 Δ·같은 rollout에서는 두 목표 시점 표기가 같은 (시작, 도착) 쌍을 사용하므로
+   목표 시점 이름만 바꾼 실험을 독립적인 ablation으로 해석하지 않는다.
 7. 기본 student 정책은 고정한 teacher head `π_T`에 `[proprio, ẑ_current]`를
    넣는다. 새 head 학습은 config 옵션으로만 준비한다. teacher head 고정,
-   초기 손실 계수 및 DAgger teacher 행동 혼합 초기값 `β=0`은 사용자 최종
-   확인 대기 항목이다. Student 행동으로 수집한 방문 상태에서 teacher
-   목표를 계산하고 100스텝 truncated BPTT를 쓴다. 실기 추론에는 Depth,
+   초기 손실 계수와 teacher head 고정은 사용자 최종 확인 대기 항목이다.
+   2026-10-09 사용자 결정으로 DAgger teacher 행동 혼합은 β=1에서 시작해
+   500 iteration 동안 0까지 선형 감소한다. 100스텝 truncated BPTT를
+   유지하며 rollout마다 env 축 4개 미니배치 × 2 epoch, 총 8번 업데이트한다.
+   EMA target은 각 optimizer step 직후 갱신한다. 기억 없는 비교군도 10 Hz
+   새 프레임에서만 CNN을 실행하고 프레임 사이에는 마지막 표현을 유지한다.
+   실기 추론에는 Depth,
    proprio, command만 사용하고 EMA target과 특권 heightmap은 제외한다.
 
 ### 연구 실험 순서와 통과 조건
