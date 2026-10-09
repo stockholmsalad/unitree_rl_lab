@@ -71,6 +71,8 @@ def test_gap_failure_reasons():
     args = (1.5, 1.7, 0.15, 0.10)
     assert gap_failure_reason(False, True, 1.6, 1.6, 0.2, *args) == "gap_fall_termination"
     assert gap_failure_reason(False, False, 1.4, 1.4, 0.0, *args) == "gap_front_stall"
+    assert gap_failure_reason(False, False, 0.9, 0.9, 0.2, *args) == "body_drop"
+    assert gap_failure_reason(False, True, 0.9, 0.9, 0.2, *args) == "body_drop"
     assert gap_failure_reason(False, True, 1.4, 1.4, 0.0, *args) == "other"
     assert gap_failure_reason(False, True, 1.8, 1.8, 0.0, *args) == "other"
     assert gap_failure_reason(True, True, 2.0, 2.0, 0.2, *args) == "success"

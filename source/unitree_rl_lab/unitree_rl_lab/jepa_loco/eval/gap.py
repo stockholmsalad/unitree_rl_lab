@@ -95,6 +95,9 @@ def gap_failure_reason(success: bool, non_timeout_done: bool, max_forward_m: flo
         return "success"
     if non_timeout_done and (inner_edge_m - near_margin_m <= last_x_m <= outer_edge_m + near_margin_m) and max_body_drop_m >= fall_drop_m:
         return "gap_fall_termination"
+    if max_body_drop_m >= fall_drop_m:
+        # 시간초과까지 구덩이에 남는 경우도 있다. x가 gap 전이면 gap 추락으로 단정하지 않는다.
+        return "body_drop"
     if not non_timeout_done and max_forward_m < inner_edge_m:
         return "gap_front_stall"
     return "other"
