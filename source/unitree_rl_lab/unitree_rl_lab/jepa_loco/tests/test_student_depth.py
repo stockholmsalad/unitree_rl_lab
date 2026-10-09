@@ -9,7 +9,8 @@ from unitree_rl_lab.jepa_loco.models.student_batches import (
     env_batch_indices, jepa_pair_tensors, realized_se2_displacement, select_env_batch,
 )
 from unitree_rl_lab.jepa_loco.models.student_losses import (
-    distillation_losses, jepa_valid_mask, masked_future_mse, normalized_latent_mse,
+    distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, masked_future_mse, normalized_jepa_with_copy,
+    normalized_latent_mse,
 )
 from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import OracleCurrentEasyStartEnvCfg
 from unitree_rl_lab.jepa_loco.envs.student_env_cfg import StudentDepthEasyStartEnvCfg
@@ -65,6 +66,59 @@ def test_jepa_mask_rejects_resets_and_command_change():
     assert mask.shape == (3, 2)
     assert not mask[0, 0] and not mask[0, 1]
     assert mask[2, 0] and not mask[2, 1]
+
+
+def test_normalized_jepa_scale_and_copy_ratio():
+    source = torch.tensor([[[0.0, 1.0]], [[2.0, 3.0]], [[4.0, 5.0]]])
+    target = torch.tensor([[[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]]])
+    pred = source + 0.5
+    mask = torch.ones(3, 1, dtype=torch.bool)
+    loss, copy, variance = normalized_jepa_with_copy(pred, source, target, mask, 1.0e-6)
+    scaled, scaled_copy, scaled_variance = normalized_jepa_with_copy(
+        pred * 7, source * 7, target * 7, mask, 1.0e-6,
+    )
+    torch.testing.assert_close(loss, scaled)
+    torch.testing.assert_close(copy, scaled_copy)
+    torch.testing.assert_close(scaled_variance, variance * 49)
+    copy_pred, copy_reference, _ = normalized_jepa_with_copy(source, source, target, mask, 1.0e-6)
+    torch.testing.assert_close(copy_pred / copy_reference, torch.ones(()))
+    assert loss < copy
+
+
+def test_frame_target_uses_only_fresh_future_in_same_episode():
+    model = StudentDepthModel(method="gru_jepa", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
+    depth = torch.rand(5, 2, 2, 8, 8)
+    fresh = torch.tensor([[True, True], [False, False], [True, False],
+                          [True, True], [False, True]])
+    done = torch.zeros(5, 2, dtype=torch.bool)
+    done[1, 1] = True
+    command = torch.zeros(5, 2, 3)
+    horizon = 2
+    mask = jepa_fresh_pair_mask(jepa_valid_mask(done, command, horizon, 0.01), fresh, horizon)
+    assert mask.shape == (3, 2)
+    assert mask[0, 0] and not mask[0, 1]
+    assert mask[1, 0] and not mask[1, 1]
+    assert not mask[2, 0] and mask[2, 1]
+    valid = torch.zeros_like(fresh)
+    valid[horizon:] = mask
+    target = model.encode_frame_targets(depth, valid, batch_size=2)
+    assert target.shape == (5, 2, 8)
+    torch.testing.assert_close(target[2, 0], model.ema_cnn(depth[2, 0:1])[0])
+    assert torch.count_nonzero(target[2, 1]) == 0
+    assert torch.count_nonzero(target[3, 1]) == 0
+    assert torch.count_nonzero(target[4, 0]) == 0
+
+
+def test_frame_target_projection_when_feature_and_context_dims_differ():
+    model = StudentDepthModel(method="gru_jepa", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=6, context_dim=8)
+    depth = torch.rand(2, 1, 2, 8, 8)
+    fresh = torch.ones(2, 1, dtype=torch.bool)
+    reset = torch.zeros_like(fresh)
+    context, _ = model.encode_sequence(depth, fresh, reset)
+    target = model.encode_frame_targets(depth, fresh, batch_size=1)
+    assert context.shape == target.shape == (2, 1, 8)
 
 
 def test_no_memory_current_frame_independent_of_history():
@@ -232,6 +286,7 @@ def test_student_update_defaults_and_invalid_batch_count():
     assert cfg.dagger_beta(250) == 0.5
     assert cfg.dagger_beta(500) == 0.0
     assert (cfg.jepa_target_mode, cfg.condition_source) == ("future", "command")
+    assert cfg.jepa_target == "context" and cfg.jepa_variance_floor > 0
     try:
         StudentTrainCfg(num_envs=65).validate_training(0.02, 5)
     except ValueError:

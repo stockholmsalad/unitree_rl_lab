@@ -66,8 +66,11 @@ class StudentDepthModel(nn.Module):
             self.frame_projection = nn.Sequential(nn.Linear(feature_dim, context_dim), nn.ELU())
             self.backbone = None
         else:
-            self.frame_projection = None
-            self.backbone = make_backbone("gru", feature_dim, context_dim)
+            # 기본 128→128은 항등이다. 차원이 다를 때만 같은 projection을
+            # GRU 입력과 frame_embedding target 양쪽에 적용한다.
+            self.frame_projection = (nn.Identity() if feature_dim == context_dim else
+                                     nn.Linear(feature_dim, context_dim))
+            self.backbone = make_backbone("gru", context_dim, context_dim)
         self.terrain_head = nn.Sequential(nn.Linear(context_dim, terrain_hidden_dim), nn.ELU(),
                                           nn.Linear(terrain_hidden_dim, terrain_dim))
         self.predictor = nn.Sequential(nn.Linear(context_dim + 3, predictor_hidden_dim), nn.ELU(),
@@ -101,10 +104,24 @@ class StudentDepthModel(nn.Module):
             return state, state
         if state is None:
             state = backbone.initial_state(depth.shape[0], depth.device)
-        features = torch.zeros(depth.shape[0], cnn.feat_dim, device=depth.device)
+        features = torch.zeros(depth.shape[0], self.context_dim, device=depth.device)
         if fresh.any():
-            features[fresh] = cnn(depth[fresh].float())
+            features[fresh] = projection(cnn(depth[fresh].float()))
         return backbone.gated_step(features, state, fresh)
+
+    def encode_frame_targets(self, depth: torch.Tensor, valid: torch.Tensor,
+                             batch_size: int) -> torch.Tensor:
+        """유효한 새 프레임만 EMA CNN(+projection)으로 인코딩한다."""
+        if depth.ndim != 5 or valid.shape != depth.shape[:2] or batch_size < 1:
+            raise ValueError("depth [T,N,2,H,W], valid [T,N], batch_size>0이어야 한다")
+        flat_depth = depth.flatten(0, 1)
+        ids = valid.flatten().nonzero(as_tuple=True)[0]
+        output = torch.zeros(flat_depth.shape[0], self.context_dim, device=depth.device)
+        with torch.no_grad():
+            for chunk in ids.split(batch_size):
+                embedding = self.ema_frame_projection(self.ema_cnn(flat_depth[chunk].float()))
+                output[chunk] = embedding
+        return output.reshape(*depth.shape[:2], self.context_dim)
 
     def encode_sequence(self, depth: torch.Tensor, fresh: torch.Tensor,
                         resets: torch.Tensor, h0: torch.Tensor | None = None,

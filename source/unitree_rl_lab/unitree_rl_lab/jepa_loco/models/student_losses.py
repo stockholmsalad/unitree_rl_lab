@@ -30,12 +30,44 @@ def jepa_valid_mask(done: torch.Tensor, command: torch.Tensor,
     return torch.stack(masks)
 
 
+def jepa_fresh_pair_mask(base_mask: torch.Tensor, fresh: torch.Tensor,
+                         horizon_steps: int) -> torch.Tensor:
+    """같은 에피소드·명령 mask 중 목표가 새 depth인 쌍만 남긴다.
+
+    DepthFrame은 렌더마다 지연을 다시 뽑으므로 Δ가 depth 주기의 정수배여도
+    시작과 목표가 동시에 fresh라는 보장은 없다. 시작 context는 hold 상태도 유효하다.
+    """
+    if fresh.ndim != 2 or base_mask.shape != (fresh.shape[0] - horizon_steps, fresh.shape[1]):
+        raise ValueError("fresh/base_mask/horizon shape가 맞지 않는다")
+    return base_mask & fresh[horizon_steps:]
+
+
 def masked_future_mse(pred: torch.Tensor, target: torch.Tensor,
                       mask: torch.Tensor) -> torch.Tensor:
     if pred.shape != target.shape or pred.ndim != 3 or mask.shape != pred.shape[:2]:
         raise ValueError("JEPA pred/target [T,N,D], mask [T,N]이어야 한다")
     per_sample = (pred - target.detach()).square().mean(dim=-1)
     return (per_sample * mask).sum() / mask.sum().clamp(min=1)
+
+
+def normalized_jepa_with_copy(pred: torch.Tensor, source: torch.Tensor, target: torch.Tensor,
+                              mask: torch.Tensor, variance_floor: float
+                              ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """유효 target의 차원별 배치 분산으로 JEPA와 copy MSE를 함께 정규화한다."""
+    if pred.shape != source.shape or pred.shape != target.shape or pred.ndim != 3 or mask.shape != pred.shape[:2]:
+        raise ValueError("JEPA pred/source/target [T,N,D], mask [T,N]이어야 한다")
+    if variance_floor <= 0:
+        raise ValueError("variance_floor는 양수여야 한다")
+    target = target.detach()
+    if not mask.any():
+        zero = pred.sum() * 0
+        return zero, zero.detach(), zero.detach()
+    target_valid = target[mask]
+    variance = target_valid.var(dim=0, unbiased=False)
+    scale = variance.clamp_min(variance_floor)
+    loss = ((pred[mask] - target_valid).square().mean(dim=0) / scale).mean()
+    copy_loss = ((source.detach()[mask] - target_valid).square().mean(dim=0) / scale).mean()
+    return loss, copy_loss, variance.mean()
 
 
 def distillation_losses(student_z: torch.Tensor, teacher_z: torch.Tensor,

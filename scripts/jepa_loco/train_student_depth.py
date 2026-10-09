@@ -21,6 +21,8 @@ parser.add_argument("--num_mini_batches", type=int)
 parser.add_argument("--num_learning_epochs", type=int)
 parser.add_argument("--jepa_target_mode", choices=("future", "present_from_past"))
 parser.add_argument("--condition_source", choices=("command", "realized_displacement"))
+parser.add_argument("--jepa_target", choices=("context", "frame_embedding"))
+parser.add_argument("--lambda_j", type=float)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.enable_cameras = True
@@ -41,14 +43,14 @@ from unitree_rl_lab.jepa_loco.models.student_batches import (  # noqa: E402
     env_batch_indices, jepa_pair_tensors, select_env_batch,
 )
 from unitree_rl_lab.jepa_loco.models.student_losses import (  # noqa: E402
-    distillation_losses, jepa_valid_mask, masked_future_mse,
+    distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, normalized_jepa_with_copy,
 )
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
 
 def main() -> None:
     overrides = {key: value for key in ("num_mini_batches", "num_learning_epochs",
-                                         "jepa_target_mode", "condition_source")
+                                         "jepa_target_mode", "condition_source", "jepa_target", "lambda_j")
                  if (value := getattr(args, key)) is not None}
     train = StudentTrainCfg(method=args.method, num_envs=args.num_envs,
                             max_iterations=args.max_iterations, **overrides)
@@ -134,8 +136,11 @@ def main() -> None:
         if train.method in ("gru_jepa", "gru_copy") and train.lambda_j:
             mask_all = jepa_valid_mask(batch["done"], batch["command"],
                                        horizon_steps, train.command_tolerance)
+            # 두 target을 동일한 새 목표 프레임 시점에서 비교한다.
+            mask_all = jepa_fresh_pair_mask(mask_all, batch["fresh"], horizon_steps)
         update_keys = ("Loss/latent", "Loss/action", "Loss/jepa", "Loss/total",
-                       "Diagnosis/action_abs_error", "Diagnosis/z_abs_error", "Diagnosis/latent_std")
+                       "Diagnosis/action_abs_error", "Diagnosis/z_abs_error", "Diagnosis/latent_std",
+                       "Diagnosis/jepa_copy_loss", "Diagnosis/jepa_target_var")
         sums = {key: 0.0 for key in update_keys}
         for _ in range(train.num_learning_epochs):
             env_batches = env_batch_indices(env.num_envs, train.num_mini_batches, device, shuffle=True)
@@ -150,16 +155,28 @@ def main() -> None:
                     student_z, mini["teacher_z"], student_action, mini["teacher_action"], mean, std,
                 )
                 jepa_loss = context.new_zeros(())
+                copy_loss = context.new_zeros(())
+                target_var = context.new_zeros(())
                 if mini_mask is not None:
                     with torch.no_grad():
-                        target_context, _ = model.encode_sequence(
-                            mini["depth"], mini["fresh"], mini_resets, mini_h0_ema, target=True,
-                        )
+                        if train.jepa_target == "context":
+                            target_context, _ = model.encode_sequence(
+                                mini["depth"], mini["fresh"], mini_resets, mini_h0_ema, target=True,
+                            )
+                        else:
+                            valid_targets = torch.zeros_like(mini["fresh"])
+                            valid_targets[horizon_steps:] = mini_mask
+                            target_context = model.encode_frame_targets(
+                                mini["depth"], valid_targets, train.jepa_frame_batch_size,
+                            )
                     source, target, condition = jepa_pair_tensors(
                         context, target_context, mini["command"], mini.get("pose"), horizon_steps,
                         train.jepa_target_mode, train.condition_source,
                     )
-                    jepa_loss = masked_future_mse(model.predict(source, condition), target, mini_mask)
+                    jepa_loss, copy_loss, target_var = normalized_jepa_with_copy(
+                        model.predict(source, condition), source, target, mini_mask,
+                        train.jepa_variance_floor,
+                    )
                 total = train.lambda_z * latent_loss + train.lambda_a * action_loss + train.lambda_j * jepa_loss
                 optimizer.zero_grad(set_to_none=True)
                 total.backward()
@@ -172,13 +189,22 @@ def main() -> None:
                 values = (latent_loss.item(), action_loss.item(), jepa_loss.item(), total.item(),
                           (student_action.detach() - mini["teacher_action"]).abs().mean().item(),
                           (student_z.detach() - mini["teacher_z"]).abs().mean().item(),
-                          student_z.detach().std(dim=(0, 1)).mean().item())
+                          student_z.detach().std(dim=(0, 1)).mean().item(),
+                          copy_loss.item(), target_var.item())
                 for key, value in zip(update_keys, values):
                     sums[key] += value
         state = state.detach()
         ema_state = ema_state.detach()
         update_count = train.num_learning_epochs * train.num_mini_batches
         logs = {key: value / update_count for key, value in sums.items()}
+        logs["Diagnosis/jepa_pred_over_copy"] = (
+            logs["Loss/jepa"] / logs["Diagnosis/jepa_copy_loss"]
+            if logs["Diagnosis/jepa_copy_loss"] > 0 else 1.0
+        )
+        logs["Diagnosis/jepa_weighted_over_latent"] = (
+            train.lambda_j * logs["Loss/jepa"] / logs["Loss/latent"]
+            if logs["Loss/latent"] > 0 else 0.0
+        )
         logs.update({"Diagnosis/jepa_mask_coverage": 0.0 if mask_all is None else mask_all.float().mean().item(),
                      "DAgger/beta": beta,
                      "DAgger/teacher_action_rate": teacher_action_count / (env.num_envs * train.rollout_steps),
@@ -193,6 +219,10 @@ def main() -> None:
               f"method={train.method} loss={logs['Loss/total']:.5f} "
               f"z={logs['Loss/latent']:.5f} action={logs['Loss/action']:.5f} "
               f"jepa={logs['Loss/jepa']:.5f} mask={logs['Diagnosis/jepa_mask_coverage']:.3f} "
+              f"copy={logs['Diagnosis/jepa_copy_loss']:.5f} "
+              f"pred_over_copy={logs['Diagnosis/jepa_pred_over_copy']:.3f} "
+              f"target_var={logs['Diagnosis/jepa_target_var']:.6f} "
+              f"weighted_over_latent={logs['Diagnosis/jepa_weighted_over_latent']:.3f} "
               f"teacher_rate={logs['DAgger/teacher_action_rate']:.3f} updates={update_count} "
               f"peak_gib={logs.get('Perf/gpu_peak_allocated_gib', 0.0):.2f} "
               f"iteration_s={logs['Perf/iteration_s']:.2f}", flush=True)

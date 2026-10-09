@@ -18,6 +18,9 @@ class StudentTrainCfg:
     lambda_a: float = 1.0
     lambda_j: float = 0.1
     jepa_horizon_s: float = 0.5
+    jepa_target: str = "context"  # frame_embedding 후보는 스모크 후 기본값 확정
+    jepa_variance_floor: float = 1.0e-6
+    jepa_frame_batch_size: int = 1024
     jepa_target_mode: str = "future"
     condition_source: str = "command"
     ema_tau: float = 0.996
@@ -45,6 +48,10 @@ class StudentTrainCfg:
             raise NotImplementedError("새 head·future terrain은 확정 후 별도 ablation으로 구현한다")
         if min(self.lambda_z, self.lambda_a, self.lambda_j) < 0:
             raise ValueError("손실 계수는 0 이상이어야 한다")
+        if self.jepa_target not in ("context", "frame_embedding"):
+            raise ValueError("JEPA target은 context 또는 frame_embedding이어야 한다")
+        if self.jepa_variance_floor <= 0 or self.jepa_frame_batch_size < 1:
+            raise ValueError("JEPA 분산 하한과 frame batch 크기는 양수여야 한다")
         if self.rollout_steps < 2 or self.num_envs < 1 or self.max_iterations < 1:
             raise ValueError("rollout/env/iteration 크기가 올바르지 않다")
         if self.num_learning_epochs < 1 or self.num_mini_batches < 1 or self.num_envs % self.num_mini_batches:
