@@ -19,6 +19,7 @@ parser.add_argument("--task", choices=(
     "Unitree-Go2-JepaLoco-OracleWide",
     "Unitree-Go2-JepaLoco-OracleCurrentFuture",
     "Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart",
+    "Unitree-Go2-JepaLoco-StudentDepth-EasyStart",
 ), required=True)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--output", required=True)
@@ -39,7 +40,7 @@ parser.add_argument("--contact_diagnostics", action="store_true", help="첫 단 
 parser.add_argument("--audit_terrain_only", action="store_true", help="실제 생성 타일의 원점·메시 z 범위를 검증하고 종료한다.")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
-if args.video:
+if args.video or args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart":
     args.enable_cameras = True
 simulation_app = AppLauncher(args).app
 
@@ -66,6 +67,8 @@ from unitree_rl_lab.jepa_loco.eval.gap import (  # noqa: E402
     fixed_width_gap_cfg, gap_failure_reason, gap_geometry, gap_success_step,
     validate_gap_origins, validate_gap_tiles,
 )
+from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy  # noqa: E402
+from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import OracleCurrentPPORunnerCfg  # noqa: E402
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
 
@@ -181,10 +184,14 @@ def main():
     if cfg.low_gap_width_m <= 0 or cfg.high_gap_width_m <= cfg.low_gap_width_m:
         raise ValueError("gap 폭은 0보다 크고 low < high여야 한다")
     env_cfg = make_eval_env_cfg(args.task, cfg)
-    agent_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
-    import importlib.metadata as metadata
-    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
-    agent_cfg.seed = cfg.seed
+    student_task = args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
+    if student_task:
+        agent_cfg = OracleCurrentPPORunnerCfg()
+    else:
+        agent_cfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
+        import importlib.metadata as metadata
+        agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
+        agent_cfg.seed = cfg.seed
 
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if args.video else None)
     gap_widths = None
@@ -258,9 +265,12 @@ def main():
             disable_logger=True,
         )
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    runner.load(str(Path(args.checkpoint).resolve()))
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
+    if student_task:
+        policy = StudentInferencePolicy(str(Path(args.checkpoint).resolve()), torch.device(env.unwrapped.device))
+    else:
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner.load(str(Path(args.checkpoint).resolve()))
+        policy = runner.get_inference_policy(device=env.unwrapped.device)
     obs = env.get_observations()
     initial_terrain_scan = {}
     for group_name in ("terrain_current", "terrain_wide", "terrain_future"):
