@@ -1104,3 +1104,77 @@ conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py -
 # ★ pilab
 conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method gru_jepa --num_envs 2048 --max_iterations 1 --seed 43 --output_dir /tmp/student_benchmark_gru_jepa --headless
 ```
+
+## 2026-10-09 — Phase 3 JEPA 목표·스케일 재설계 (본 학습 보류)
+
+pilab에서 기존 GRU+JEPA seed 43을 2048 env로 56 iteration까지 실행한 뒤
+사용자가 중단했다. iteration 0~56에서 latent 손실 0.022~0.041,
+action 약 0.0001, 원시 JEPA 손실 0.0001~0.0004, mask 0.99~1.0이었다.
+기존 λ_J=0.1을 곱하면 JEPA 항의 **손실값 비율**은 latent의 약
+0.05~0.15%다. 손실값만으로 기울기 비율을 단정할 수는 없지만,
+JEPA 신호가 지나치게 약할 가능성이 높다. iteration 51에서 latent
+손실이 0.022→2.23으로 일시 급등하고 다음 iteration에 0.025로
+회복했으며 JEPA도 약 0.015로 튀었다. GRU 단독 런의 동시기 기록은
+현재 로컬에 없어 같은 현상이 있는지 아직 확인하지 못했다.
+
+이번 수정은 `jepa_target=context|frame_embedding` 선택을 추가한다.
+기본값 `context`는 EMA GRU 상태를, 후보 `frame_embedding`은 Δ 뒤
+**새 depth 프레임**의 EMA CNN(+차원이 다를 때 projection) 출력을
+예측한다. 두 설정과 copy 기준은 모두 같은 **새 목표 프레임** 시점을
+사용한다. 기존 같은 에피소드·명령 유지 마스크에 목표 시점의
+`depth_fresh` 조건을 교집합으로 적용한다. DepthFrame은 렌더마다
+1~3스텝 지연을 다시 뽑으므로 Δ가 5스텝의 배수여도 시작과 목표가
+동시에 fresh인 것은 보장되지 않는다. 시작의 GRU context는 최근
+프레임을 hold한 상태도 유효하다. 따라서 이전 50 Hz 전체 시점 mask
+비율 약 0.99와 새 mask 비율을 직접 비교하면 안 된다.
+
+두 설정의 JEPA와 copy MSE는 해당 미니배치의 **유효 target 차원별
+분산**으로 나눈다. 분산은 stop-gradient이며 분산 하한은
+`StudentTrainCfg.jepa_variance_floor=1e-6`으로 노출한다. 이 하한이
+활성화되는 차원이 많으면 정규화 효과를 별도로 점검해야 한다.
+`Diagnosis/jepa_copy_loss`, `Diagnosis/jepa_pred_over_copy`,
+`Diagnosis/jepa_target_var`, `Diagnosis/jepa_weighted_over_latent`를
+기록한다. copy predictor는 같은 target·mask·정규화에서 항등 함수를
+사용하므로 `pred_over_copy=1`이어야 한다. λ_J는 0.1을 일단 유지하고
+256 env·20 iteration 스모크 결과로 target 기본값 및 계수 조정을
+제안한다. 본 학습은 시작하지 않는다.
+단, `frame_embedding`의 copy는 현재 GRU context를 미래 CNN 표현과
+직접 비교한다. 두 표현 공간이 원래 다를 수 있으므로 ratio<1만으로
+미래 지형 예측 능력이 생겼다고 주장하지 않는다. 고정 평가·행동 지표와
+함께 해석한다.
+
+Z790 `env_test`에서 두 target 각각 64 env·2 iteration 스모크를
+완료했다. 최종 코드 기준 iteration 2의 진단은 다음과 같다. 두 설정
+모두 mask coverage 약 0.20이다. 샘플 수와 학습 길이가 작아 target 및
+λ_J를 결정하는 근거로 쓰지 않는다.
+
+| target | latent | 정규화 JEPA | 정규화 copy | pred/copy | target 분산 | λ_J×JEPA/latent |
+|---|---:|---:|---:|---:|---:|---:|
+| context | 4.635 | 50.537 | 3271.142 | 0.015 | 0.000079 | 1.090 |
+| frame_embedding | 4.845 | 25.944 | 1086.377 | 0.024 | 0.000266 | 0.535 |
+
+`gru_copy` + `frame_embedding` 64 env·1 iteration 스모크에서 JEPA와
+copy 손실은 모두 190.021, `pred_over_copy=1.000`이었다. 변경 후 Isaac
+앱 내부 전체 테스트는 **99개 통과**했다.
+
+pilab 256 env·20 iteration 스모크는 다른 GRU/no_memory 학습의 GPU
+사용량을 확인한 뒤 순차로 실행한다. 동일 seed 43, teacher, 통계,
+λ_J=0.1이며 target만 다르다. 비교할 값은 iteration 5~20의
+`Loss/latent`, `Loss/jepa`, `Diagnosis/jepa_copy_loss`,
+`Diagnosis/jepa_pred_over_copy`, `Diagnosis/jepa_target_var`,
+`Diagnosis/jepa_weighted_over_latent`와 mask coverage다.
+
+```bash
+# ★ pilab
+nvidia-smi
+```
+
+```bash
+# ★ pilab
+conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method gru_jepa --jepa_target context --num_envs 256 --max_iterations 20 --seed 43 --output_dir results/jepa_loco/student/jepa_target_pilot_s43_context --headless
+```
+
+```bash
+# ★ pilab
+conda activate env_isaaclab && python scripts/jepa_loco/train_student_depth.py --teacher_checkpoint logs/rsl_rl/jepa_loco_oracle_current/2026-10-07_17-57-46_oracle_current_easystart_s42/model_2999.pt --teacher_stats results/jepa_loco/student/teacher_latent_stats_s42.pt --method gru_jepa --jepa_target frame_embedding --num_envs 256 --max_iterations 20 --seed 43 --output_dir results/jepa_loco/student/jepa_target_pilot_s43_frame_embedding --headless
+```

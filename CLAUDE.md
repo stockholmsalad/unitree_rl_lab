@@ -42,6 +42,13 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
    에피소드·명령 유지 mask를 적용하고 유효 표본 수로 정규화한다. 역할은
    사각지대를 채우는 기억 형성이며 copy predictor 비교를 유지한다.
    초기 계수 `λ_z=1, λ_a=1, λ_J=0.1`, Δ=0.5 s는 configclass에 노출한다.
+   **2026-10-09 JEPA 진단 수정:** pilab 초기 56 iteration에서 원시 context MSE가
+   latent 증류에 비해 매우 작았다. JEPA와 copy 손실은 유효한 새 목표 depth
+   프레임의 EMA target 차원별 배치 분산으로 정규화하고, copy 대비 예측 손실 및
+   target 분산을 로깅한다. target은 EMA GRU `context`(현재 기본값) 또는
+   EMA CNN `frame_embedding` 중 선택한다. 후자는 새 프레임 시점만 사용한다.
+   `frame_embedding` 기본값 전환과 λ_J 조정은 256 env·20 iteration 비교
+   결과를 보고 사용자가 확정한다.
    2026-10-09부터 JEPA 목표 시점(`future`/`present_from_past`)과 predictor 조건
    (`command`/`realized_displacement`)도 설정으로 선택한다. 기본 조건은 `command`다.
    실현 변위는 시작 몸통 좌표계의 SE(2) 변위이며 yaw는 ±π에서 wrap한다.
