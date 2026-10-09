@@ -1232,3 +1232,29 @@ JEPA와 EMA copy 손실은 각각 **2.44549**로 같았고,
 `pred_over_copy=1.000`; online→EMA copy는 685.906이었다.
 Isaac 앱 내부 전체 테스트는 **102개 통과**했다. 학습 코드·테스트
 검증만 수행했고 본 학습은 시작하지 않았다.
+
+## 2026-10-09 — `gru_copy` 학습 경로 수정 (7b87384 리뷰)
+
+직전 구현은 `gru_copy` 예측값을 EMA 현재 표현으로 바꿔 JEPA 손실의
+online gradient가 0이 됐다. 따라서 그 방식의 `gru_copy`는 GRU
+증류와 같은 최적화 경로였고, 위의 `gru_copy` 스모크 수치는 **진단
+copy 경로 확인값일 뿐 학습 비교군의 결과가 아니다**.
+
+현재 정의는 두 가지를 분리한다. `Diagnosis/jepa_copy_loss`는 같은
+EMA 인코더의 `h̄_t→h̄_{t+Δ}`로 계산하는 **진단 기준**이며
+`gru_jepa`의 예측 손실과 비교한다. 반면 `gru_copy` **학습 방법**은
+online `h_t`를 predictor 없이 그대로 반환해 미래 EMA target에
+맞춘다. 따라서 `gru_copy`의 `Loss/jepa`는
+`Diagnosis/jepa_copy_online_loss`와 같고, JEPA gradient는 online
+CNN·GRU로 흐른다. predictor MLP에는 gradient가 없다.
+online/EMA 표현 offset 때문에 초기 정규화 JEPA 손실이 클 수 있으며,
+그 값은 조정하지 않고 스모크 결과 그대로 기록한다.
+
+Z790 `env_test` `gru_copy` context 64 env·2 iteration 스모크는 완료됐다.
+iteration 0/1의 `Loss/jepa`는 **2281.232 / 4723.199**,
+`Diagnosis/jepa_copy_online_loss`는 **2281.232 / 4723.199**로
+일치했다. EMA→EMA 진단 copy는 **10.776 / 2.420**이었다.
+`Diagnosis/jepa_weighted_over_latent`는 warmup 계수 0.000/0.002에
+따라 **0.000 / 1.589**였다. 큰 초기 online→EMA 손실은 그대로
+기록했고 이 스모크에서 계수나 정규화 방식을 바꾸지 않았다.
+Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하지 않았다.

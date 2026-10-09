@@ -57,9 +57,12 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
    `jepa_copy_loss`는 **같은 EMA 인코더**의 현재/미래 표현
    `h̄_t`/`h̄_{t+Δ}`의 정규화 MSE다. `frame_embedding`이면 양쪽 모두
    EMA CNN(+projection) 표현이다. online `h_t`와 EMA 미래 target 간 MSE는
-   `jepa_copy_online_loss`로 별도 기록한다. `gru_copy`는 EMA 현재 표현을
-   항등 예측으로 사용하므로 JEPA 항에서 online encoder로 기울기가 흐르지
-   않는다. 이 비교군의 행동 학습은 GRU 증류 손실로만 진행된다.
+   `jepa_copy_online_loss`로 별도 기록한다. **진단용 copy(EMA→EMA)와
+   `gru_copy` 학습 방법(online identity)은 별개**다. `gru_copy`는 online
+   context `h_t`를 항등 예측값으로 사용하고 EMA 미래 target과의 손실
+   기울기를 online CNN·GRU로 보낸다. predictor MLP는 사용하지 않는다.
+   이 방법의 JEPA 손실은 `jepa_copy_online_loss`와 같으며, 진단용
+   `jepa_copy_loss`와 같을 필요는 없다.
    2026-10-09부터 JEPA 목표 시점(`future`/`present_from_past`)과 predictor 조건
    (`command`/`realized_displacement`)도 설정으로 선택한다. 기본 조건은 `command`다.
    실현 변위는 시작 몸통 좌표계의 SE(2) 변위이며 yaw는 ±π에서 wrap한다.
