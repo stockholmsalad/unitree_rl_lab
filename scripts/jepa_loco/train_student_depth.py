@@ -192,7 +192,7 @@ def main() -> None:
                         train.jepa_target_mode, train.condition_source,
                     )
                     source_ema = ema_context[:-horizon_steps]
-                    pred = model.predict(source, condition, ema_copy_source=source_ema)
+                    pred = model.predict(source, condition)
                     jepa_loss, copy_loss, copy_online_loss, target_var, online_context_var = normalized_jepa_with_copy(
                         pred, source, source_ema, target, mini_mask,
                         train.jepa_variance_floor,

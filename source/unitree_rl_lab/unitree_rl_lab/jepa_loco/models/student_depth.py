@@ -141,12 +141,9 @@ class StudentDepthModel(nn.Module):
     def terrain_latent(self, context: torch.Tensor) -> torch.Tensor:
         return self.terrain_head(context)
 
-    def predict(self, context: torch.Tensor, command: torch.Tensor,
-                ema_copy_source: torch.Tensor | None = None) -> torch.Tensor:
+    def predict(self, context: torch.Tensor, command: torch.Tensor) -> torch.Tensor:
         if self.method == "gru_copy":
-            if ema_copy_source is None or ema_copy_source.shape != context.shape:
-                raise ValueError("gru_copy에는 같은 시점의 EMA source가 필요하다")
-            return ema_copy_source.detach()
+            return context
         return self.predictor(torch.cat((context, command), dim=-1))
 
     @torch.no_grad()

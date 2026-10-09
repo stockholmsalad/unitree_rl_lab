@@ -93,18 +93,47 @@ def test_normalized_jepa_scale_and_copy_ratio():
     assert loss < copy
 
 
-def test_gru_copy_predicts_ema_source_without_jepa_gradient():
+def test_gru_copy_uses_online_identity_and_trains_encoder():
     model = StudentDepthModel(method="gru_copy", image_hw=(8, 8), cnn_channels=(4,),
                               cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
-    source_online = torch.randn(3, 2, 8, requires_grad=True)
-    source_ema = torch.randn(3, 2, 8)
-    target_ema = torch.randn(3, 2, 8)
-    pred = model.predict(source_online, torch.zeros(3, 2, 3), ema_copy_source=source_ema)
-    loss, copy, _, _, _ = normalized_jepa_with_copy(
+    depth = torch.rand(4, 2, 2, 8, 8)
+    fresh = torch.ones(4, 2, dtype=torch.bool)
+    reset = torch.zeros_like(fresh)
+    context, _ = model.encode_sequence(depth, fresh, reset)
+    with torch.no_grad():
+        ema, _ = model.encode_sequence(depth, fresh, reset, target=True)
+    source_online, source_ema, target_ema = context[:-1], ema[:-1], ema[1:]
+    pred = model.predict(source_online, torch.zeros(3, 2, 3))
+    loss, copy, copy_online, _, _ = normalized_jepa_with_copy(
         pred, source_online, source_ema, target_ema, torch.ones(3, 2, dtype=torch.bool), 1.0e-6,
     )
-    torch.testing.assert_close(loss, copy)
-    assert not loss.requires_grad and pred.grad_fn is None
+    torch.testing.assert_close(pred, source_online)
+    torch.testing.assert_close(loss, copy_online)
+    torch.testing.assert_close(copy, copy_online)  # 초기 EMA는 online과 같은 가중치
+    loss.backward()
+    assert model.cnn.head[1].weight.grad is not None
+    assert model.cnn.head[1].weight.grad.abs().sum() > 0
+    assert model.backbone.cell.weight_ih.grad is not None
+    assert model.backbone.cell.weight_ih.grad.abs().sum() > 0
+    assert all(p.grad is None for p in model.predictor.parameters())
+
+
+def test_gru_jepa_predictor_receives_gradient():
+    model = StudentDepthModel(method="gru_jepa", image_hw=(8, 8), cnn_channels=(4,),
+                              cnn_kernels=(3,), cnn_strides=(1,), feature_dim=8, context_dim=8)
+    depth = torch.rand(4, 2, 2, 8, 8)
+    fresh = torch.ones(4, 2, dtype=torch.bool)
+    reset = torch.zeros_like(fresh)
+    context, _ = model.encode_sequence(depth, fresh, reset)
+    with torch.no_grad():
+        ema, _ = model.encode_sequence(depth, fresh, reset, target=True)
+    pred = model.predict(context[:-1], torch.zeros(3, 2, 3))
+    loss, _, _, _, _ = normalized_jepa_with_copy(
+        pred, context[:-1], ema[:-1], ema[1:], torch.ones(3, 2, dtype=torch.bool), 1.0e-6,
+    )
+    loss.backward()
+    assert model.predictor[0].weight.grad is not None
+    assert model.predictor[0].weight.grad.abs().sum() > 0
 
 
 def test_frame_target_uses_only_fresh_future_in_same_episode():
