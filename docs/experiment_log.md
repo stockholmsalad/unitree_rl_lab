@@ -978,3 +978,52 @@ Depth로 기억·예측**하는 보행으로 바꾼다. 교사 head 고정 재�
 숨은 점은 이 표본에서 확인되지 않았으므로, “계단 수직면이 단 윗면을
 가린다”는 별도 현상은 이 그림만으로 주장하지 않는다. 카메라 위치는
 실측 전 임시값이므로 실기 장착값이 확정되면 다시 계산해야 한다.
+
+### Phase 3 student 구현 및 스모크
+
+새 task `Unitree-Go2-JepaLoco-StudentDepth-EasyStart`는
+Current-EasyStart의 지형·명령·보상·커리큘럼·종료·이벤트·critic과
+레벨별 진단을 그대로 상속한다. D435i와 기존 DepthFrame의 2채널
+10 Hz depth, freshness 플래그를 추가한다. Student 행동 입력은
+`policy` proprio와 depth뿐이고 `terrain_current`는 고정 teacher
+목표 계산에만 사용한다.
+
+`Current-EasyStart` seed 42 `model_2999.pt`의 terrain encoder,
+proprio 정규화기, 정책 head를 전부 `eval`·`requires_grad=False`로
+고정한다. 먼저 oracle 정책이 방문한 64 env×500스텝 **32,000개**
+latent에서 평균·표준편차를 추정해
+`results/jepa_loco/student/teacher_latent_stats_s42.pt`에 고정했다.
+표준편차 최소값은 0.01958, 평균은 0.27251이며 최소값 clamp 0.01은
+이 데이터에서 발동하지 않았다.
+
+Student는 `DepthCNN→GRU→128차원 h→32차원 terrain head g`이며
+기억 없는 비교군은 같은 CNN의 현재 프레임만 쓴다. 고정 teacher
+head를 거친 행동 MSE의 기울기는 student terrain head까지 전달된다.
+JEPA는 0.5 s(25 제어 스텝) 뒤 실제 depth의 EMA context를 target으로
+하고, 같은 에피소드·구간 명령 유지 표본만 유효 수로 평균한다.
+copy 비교군은 미래 예측 대신 현재 context를 그대로 쓴다. DAgger는
+방문 상태에서 teacher 목표를 계산하며 혼합 β는 configclass의
+기본값 0이다. 100스텝 rollout을 에피소드 reset mask로 재계산해
+truncated BPTT로 업데이트한다. 초기 손실 계수는 `λ_z=1`, `λ_a=1`,
+`λ_J=0.1`; GRU와 기억 없는 대조군에서는 JEPA 항을 끈다.
+
+네 비교군(`no_memory`, `gru`, `gru_jepa`, `gru_copy`) 모두
+**64 env·2 iteration** 스모크가 완료됐고 각 `model_2.pt`가 저장됐다.
+GRU+JEPA의 JEPA 유효 mask 비율은 0.989/0.973, copy는
+0.989/0.991이었다. 초기 latent 손실은 약 85~90에서 2번째
+iteration 약 54로 내려갔다. 이는 실행 경로 확인이며 수렴이나
+계단 성능의 근거가 아니다. Student checkpoint를 고정 9/13 cm
+계단 4 env·30스텝 평가기가 읽고 origin 검사와 JSON 출력을 통과했다.
+
+사각지대 linear probe는 별도 seed의 고정 계단 데이터를 각각
+독립 Isaac 앱에서 수집하고, 한쪽에서 `z→187점 heightmap` ridge
+회귀를 적합해 다른 쪽에 평가한다. C의 187점 렌더 가시 mask를 이용해
+보이는 점과 안 보이는 점의 MSE를 9/13 cm·접근 거리별로 분리한다.
+seed 43/44 각 4 env·50스텝 데이터와 40개 표본으로 파이프라인
+스모크를 통과했다. 2 iteration 정책과 짧은 궤적의 probe 오차는
+연구 결과로 사용하지 않는다. 이후 본 학습은 시작하지 않았다.
+전체 Isaac 앱 단위 테스트는 **90개 통과**. 마지막 64 env 재확인 한 건은
+다른 Isaac 앱과 겹친 시점에 VRAM이 거의 가득 차 초기화에서 실패했다.
+실패는 첫 학습 스텝 전에 발생했으며, 이전의 네 비교군 순차 스모크
+완료 사실을 뒤집지 않는다. GPU를 사용하는 검증은 이후 한 번에
+한 Isaac 앱만 실행한다.

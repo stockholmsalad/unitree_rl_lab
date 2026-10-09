@@ -69,7 +69,9 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
 Current보다 낮아 미리 정한 teacher 기준을 통과하지 못했다. Phase 3
 teacher는 Current-EasyStart seed 42 `model_2999.pt`로 고정한다. Wide와
 Current+Future는 선택 비교 기록으로 남긴다. 아래의 당시 우선순위와
-비교 설계는 결정 이력이며 현재 student 구현의 목표가 아니다.
+비교 설계 및 위의 연구 실험 순서 2~3번은 결정 이력이며 현재 student
+구현의 목표가 아니다. 현재 Phase 3 기본 비교는 기억 없음/GRU/
+GRU+JEPA/GRU+copy의 고정 teacher head 증류다.
 
 - Phase 2의 주목표는 Phase 3 depth student가 증류받을 **Current+Future teacher**
   checkpoint를 만드는 것이다. 학생의 공유 terrain encoder는 `z_current`, `z_future`를
