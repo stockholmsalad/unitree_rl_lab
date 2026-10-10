@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from unitree_rl_lab.jepa_loco.eval.stairs import (
-    fixed_height_stair_cfg, stair_geometry, stair_progress,
-    unmet_success_conditions, validate_stair_origins,
+    StudentFixedEvalCfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
+    unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
 )
 from unitree_rl_lab.jepa_loco.envs.easy_start_terrain import EasyUpCfg
 
@@ -59,3 +59,19 @@ def test_unmet_conditions_separate_simultaneous_and_hold():
     assert unmet_success_conditions(False, True, True, False) == ["simultaneous_conditions"]
     assert unmet_success_conditions(False, True, True, True) == ["hold_steps"]
     assert unmet_success_conditions(True, True, True, True) == []
+
+
+def test_student_fixed_viewer_default_and_swing_peak_mask():
+    assert StudentFixedEvalCfg().viewer_env_index == 0
+    peak = torch.full((2,), -torch.inf)
+    foot_z = torch.tensor([[0.12, 0.18], [0.25, 0.30]])
+    force = torch.tensor([[[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]],
+                          [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]])
+    air_time = torch.tensor([[0.10, 0.10], [0.10, 0.10]])
+    updated = update_swing_foot_peak(peak, foot_z, force, air_time,
+                                      torch.tensor([True, False]), 1.0, 0.05)
+    assert updated[0].item() == pytest.approx(0.12)
+    assert torch.isneginf(updated[1])
+    next_peak = update_swing_foot_peak(updated, foot_z + 0.02, torch.zeros_like(force),
+                                       air_time, torch.tensor([True, True]), 1.0, 0.05)
+    assert next_peak.tolist() == pytest.approx([0.20, 0.32])

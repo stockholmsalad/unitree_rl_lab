@@ -22,6 +22,10 @@ parser.add_argument("--teacher_stats", type=str, default=None,
                     help="체크포인트에 기록된 통계 경로가 이 머신에서 다를 때 지정한다.")
 parser.add_argument("--output", type=str, default=None)
 parser.add_argument("--video", action="store_true")
+parser.add_argument("--viewer_env_index", type=int, default=None,
+                    help="--video로 녹화할 env 번호 (기본 0).")
+parser.add_argument("--contact_diagnostics", action="store_true",
+                    help="첫 단 부근 종료·접촉 body·발 높이·스텝 보상을 기록한다.")
 parser.add_argument("--audit_terrain_only", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -37,7 +41,7 @@ from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy
 
 def main() -> None:
     defaults = StudentFixedEvalCfg()
-    for name in ("step_heights_m", "envs_per_height", "seed", "spawn_forward_m"):
+    for name in ("step_heights_m", "envs_per_height", "seed", "spawn_forward_m", "viewer_env_index"):
         if getattr(args, name) is None:
             setattr(args, name, getattr(defaults, name))
     checkpoint_path = Path(args.checkpoint).resolve()
@@ -62,7 +66,6 @@ def main() -> None:
     args.envs_per_width = None
     args.probe_terrain = False
     args.flatten_terrain_input = False
-    args.contact_diagnostics = False
     heights = tuple(args.step_heights_m) if args.terrain == "stairs" else None
     run_fixed_eval(
         args, step_heights_m=heights,

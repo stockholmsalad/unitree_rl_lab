@@ -59,7 +59,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg 
 from isaaclab_tasks.utils import load_cfg_from_registry  # noqa: E402
 from unitree_rl_lab.jepa_loco.eval.stairs import (  # noqa: E402
     StairEvalCfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
-    unmet_success_conditions, validate_stair_origins,
+    unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
 )
 from unitree_rl_lab.jepa_loco.eval.gap import (  # noqa: E402
     fixed_width_gap_cfg, gap_failure_reason, gap_geometry, gap_success_step,
@@ -168,6 +168,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     cfg = StairEvalCfg()
     if args.spawn_forward_m is not None:
         cfg.spawn_forward_m = args.spawn_forward_m
+    if getattr(args, "viewer_env_index", None) is not None:
+        cfg.viewer_env_index = args.viewer_env_index
     if args.episode_steps is not None:
         cfg.episode_steps = args.episode_steps
     if args.envs_per_height is not None:
@@ -196,6 +198,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                                       any(h <= 0 for h in step_heights_m) or
                                       tuple(sorted(set(step_heights_m))) != tuple(step_heights_m)):
         raise ValueError("계단 높이 목록은 양수이고 중복 없이 오름차순이어야 한다")
+    group_count = len(step_heights_m) if args.terrain == "stairs" and step_heights_m else 2
+    if not 0 <= cfg.viewer_env_index < group_count * cfg.envs_per_height:
+        raise ValueError("viewer_env_index가 평가 env 범위를 벗어났다")
     env_cfg = make_eval_env_cfg(args.task, cfg, args.terrain, args.device, step_heights_m)
     student_task = args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     if student_task:
@@ -369,6 +374,12 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
         contact_ids, contact_names = contact_sensor.find_bodies(".*")
         front_contact_ids = [idx for idx, name in zip(contact_ids, contact_names) if name.startswith("F") and name.endswith("_foot")]
+        front_foot_names = [name for name in foot_names if name.startswith("F")]
+        front_contact_names = [name for name in contact_names if name.startswith("F") and name.endswith("_foot")]
+        if front_foot_names != front_contact_names:
+            raise ValueError("로봇과 접촉 센서의 앞발 순서가 다르다")
+        swing_params = env_cfg.rewards.swing_foot_clearance.params
+        peak_swing_front_foot_z = torch.full_like(max_steps, -float("inf"))
         term_manager = env.unwrapped.termination_manager
         contact_trace_started = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.bool)
         contact_trace_remaining = torch.zeros(env.num_envs, device=env.unwrapped.device, dtype=torch.long)
@@ -382,7 +393,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         if args.terrain == "gap":
             terminal_z[ids] = robot.data.root_pos_w[ids, 2]
         if args.contact_diagnostics and args.terrain == "stairs":
-            root_x = (robot.data.root_pos_w[ids, 0] - origin[ids, 0]).abs()
+            root_x = robot.data.root_pos_w[ids, 0] - origin[ids, 0]
             for env_id, distance in zip(ids.tolist(), root_x.tolist()):
                 if abs(distance - first_riser) > cfg.contact_probe_margin_m:
                     continue
@@ -478,6 +489,14 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             peak_front_foot_z = torch.where(still_active, torch.maximum(peak_front_foot_z, front_z), peak_front_foot_z)
             peak_front_foot_x = torch.where(still_active, torch.maximum(peak_front_foot_x, front_x), peak_front_foot_x)
             if args.contact_diagnostics and args.terrain == "stairs":
+                front_foot_z = robot.data.body_pos_w[:, front_foot_ids, 2] - origin[:, None, 2]
+                front_forces = contact_sensor.data.net_forces_w[:, front_contact_ids]
+                front_air_time = contact_sensor.data.current_air_time[:, front_contact_ids]
+                near_step = still_active & ((forward - first_riser).abs() <= cfg.contact_probe_margin_m)
+                peak_swing_front_foot_z = update_swing_foot_peak(
+                    peak_swing_front_foot_z, front_foot_z, front_forces, front_air_time,
+                    near_step, swing_params["contact_threshold"], swing_params["min_air_time"],
+                )
                 front_force = contact_sensor.data.net_forces_w[:, front_contact_ids].norm(dim=-1).amax(dim=1)
                 start_trace = still_active & ~contact_trace_started & (
                     (front_x >= first_riser - cfg.contact_probe_foot_x_margin_m)
@@ -491,6 +510,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                     contact_diagnostics["first_contact_traces"].append({
                         "env_id": env_id, "step": step + 1, "height_m": heights[env_id].item(),
                         "body_x_m": forward[env_id].item(), "front_foot_x_m": front_x[env_id].item(),
+                        "peak_swing_front_foot_z_near_step_m": (
+                            peak_swing_front_foot_z[env_id].item()
+                            if torch.isfinite(peak_swing_front_foot_z[env_id]) else None),
                         "contact_bodies": [name for name, value in zip(contact_names, force.tolist())
                                            if value > cfg.contact_probe_force_threshold_n],
                         "contact_bodies_recent": [name for name, value in zip(contact_names, recent_force.tolist())
@@ -559,6 +581,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
               "success_rule": success_rule,
               "groups": {}, "trace": trace, "foot_names": foot_names,
               "contact_diagnostics": contact_diagnostics if args.contact_diagnostics else None}
+    report["viewer_env_index"] = cfg.viewer_env_index
     if student_task:
         report["student_method"] = policy.method
         report["policy_mode"] = policy.policy_mode
@@ -611,6 +634,12 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         if args.terrain == "gap":
             report["groups"][name]["gap_width_m"] = cfg.low_gap_width_m if name == "low" else cfg.high_gap_width_m
             report["groups"][name]["max_body_drop_m_mean"] = (start_z[sel] - min_body_z[sel]).clamp(min=0).mean().item()
+        if args.contact_diagnostics and args.terrain == "stairs":
+            finite = sel & torch.isfinite(peak_swing_front_foot_z)
+            report["groups"][name]["peak_swing_front_foot_z_near_step_m_mean"] = (
+                peak_swing_front_foot_z[finite].mean().item() if finite.any() else None)
+            report["groups"][name]["peak_swing_front_foot_z_near_step_m_max"] = (
+                peak_swing_front_foot_z[finite].max().item() if finite.any() else None)
         if latent_sums is not None:
             report["groups"][name]["latent_error"] = {
                 key: {"mean": (latent_sums[sel, i].sum() / latent_counts[sel, i].sum()).item()
@@ -642,6 +671,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         "last_x_m": last_xy[i, 0].item(), "last_y_m": last_xy[i, 1].item(), "last_yaw_rad": last_yaw[i].item(),
         "max_consecutive_reached": int(max_consecutive[i].item()),
         "unmet_success_conditions": _unmet(i),
+        **({"peak_swing_front_foot_z_near_step_m":
+            peak_swing_front_foot_z[i].item() if torch.isfinite(peak_swing_front_foot_z[i]) else None}
+           if args.contact_diagnostics and args.terrain == "stairs" else {}),
         **({"latent_error_near_first_step_mean":
             (latent_sums[i, 0] / latent_counts[i, 0]).item() if latent_counts[i, 0] > 0 else None,
             "latent_error_elsewhere_mean":

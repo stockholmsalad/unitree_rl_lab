@@ -1,5 +1,13 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-10 — Student 고정 평가 viewer·접촉 진단 옵션
+
+`eval_student_fixed.py`에 `--viewer_env_index N`(기본 0)과 `--contact_diagnostics`를 추가했다. viewer 번호는 공통 `StairEvalCfg.viewer_env_index`를 거쳐 영상 대상 env에 적용하고, 범위를 검사한다. 접촉 진단은 student·`--policy teacher` 모두 기존 고정 계단 평가의 첫 단 ±0.4 m 종료 사유, 접촉 body, 스텝 보상 기록을 사용한다. 추가로 보상 설정과 동일한 접촉력·air-time 기준으로 실제 스윙 중인 앞발의 첫 단 근처 최고 z를 env별·그룹별로 기록한다. 진단 위치 검사에는 signed body x를 사용한다.
+
+Isaac 앱 테스트 **108개 통과**. Z790에서 GRU 2-iteration 스모크 체크포인트, 9 cm, 16 env, seed 43, 200 step, viewer env 5로 진단 off/on을 실행했다. 성공은 양쪽 모두 0/16이고, 진단 on에는 첫 단 근처 종료 기록 16건, 접촉 trace 64건, 유효 스윙 앞발 최고 높이 16 env가 기록됐다. `--policy teacher`에서도 접촉 trace 64건과 스윙 최고 높이 16 env를 확인했다. `--video --viewer_env_index 5`의 20-step 스모크는 MP4를 생성했고 JSON의 viewer 번호도 5였다.
+
+**종료 판정 재현성 한계:** 200-step off/on에서 비시간초과 종료가 각각 15/16, 14/16으로 1 env 달랐다. 같은 seed의 off/off 반복도 env별 종료 스텝이 달랐고 최대 전진 x가 최대 약 9 mm 달랐다. 따라서 관측된 1 env 차이를 진단 옵션의 효과로 단정할 수 없으며, 동일 seed만으로 per-env 종료 판정의 완전 일치를 보장하지 못한다. 진단 코드는 보상·행동·성공 판정에 쓰는 상태를 수정하지 않는다. 본 학습 체크포인트의 성능 비교 결과로 해석하지 않는다.
+
 ## 2026-10-10 — Phase 3 student 고정 지형 평가 구현 (Z790)
 
 `scripts/jepa_loco/eval_student_fixed.py`를 추가했다. 학습 task `Unitree-Go2-JepaLoco-StudentDepth-EasyStart`의 depth 관측(노이즈·지연·10 Hz fresh gate)과 보상·종료는 유지하고, 기존 `eval_stairs_fixed.py`의 지형 생성, 계단 origin 검사, gap 메시 검사, 성공 판정, per-env 기록을 **같은 평가 함수로 호출**한다. 따라서 학습용 EasyStart 평지 워밍업 함수가 평가 계단·gap에 섞이지 않는다. 기본값은 중심 출발 x=0, 직진 명령 0.6 m/s, seed 43, 오르는 계단 9·10·11·12·13·14·15 cm, 높이당 128 env, 1000 control step이다. 높이별 열을 원본 `MeshInvertedPyramidStairsTerrainCfg`로 만들며 생성된 모든 열의 origin z를 단 수·높이의 해석값과 비교한다. `--terrain flat/gap`과 `--audit_terrain_only`도 같은 평가 본체를 사용한다. 기본 일곱 높이는 한 실행에 896 env이므로 Z790 메모리가 부족하면 `--step_heights_m`으로 높이별 또는 쌍별로 실행한다. 이전 teacher 결과의 쌍별 env 번호와 정확히 같은 랜덤 출발 샘플을 맞추려면 같은 높이 쌍과 seed로 평가한다.

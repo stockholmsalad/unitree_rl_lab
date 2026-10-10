@@ -48,6 +48,7 @@ class StudentFixedEvalCfg:
     envs_per_height: int = 128
     seed: int = 43
     spawn_forward_m: float = 0.0
+    viewer_env_index: int = 0
 
 
 def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_width: float,
@@ -73,6 +74,20 @@ def stair_progress(root_xyz: torch.Tensor, origin_xyz: torch.Tensor, start_z: to
     forward = root_xyz[:, 0] - origin_xyz[:, 0]
     reached_top = (gain >= height_fraction * stair_count * step_heights) & (forward >= top_edge - position_margin)
     return reached_top, gain / step_heights
+
+
+def update_swing_foot_peak(peak: torch.Tensor, foot_z: torch.Tensor, contact_force_w: torch.Tensor,
+                           air_time: torch.Tensor, near_step: torch.Tensor,
+                           contact_threshold: float, min_air_time: float) -> torch.Tensor:
+    """첫 단 근처에서 실제 스윙 중인 발의 원점 기준 최고 z를 env별로 갱신한다."""
+    if (peak.ndim != 1 or foot_z.ndim != 2 or foot_z.shape[0] != peak.shape[0]
+            or contact_force_w.shape != (*foot_z.shape, 3) or air_time.shape != foot_z.shape
+            or near_step.shape != peak.shape):
+        raise ValueError("peak/near [N], foot_z/air_time [N,F], force [N,F,3] 필요")
+    swing = ((contact_force_w.norm(dim=-1) < contact_threshold)
+             & (air_time > min_air_time) & near_step[:, None])
+    candidates = torch.where(swing, foot_z, -torch.inf).amax(dim=1)
+    return torch.maximum(peak, candidates)
 
 
 def fixed_height_stair_cfg(template, height_m: float, proportion: float):
