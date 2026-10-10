@@ -162,9 +162,13 @@ class StudentDepthModel(nn.Module):
 class StudentInferencePolicy:
     """기존 고정 지형 평가 스크립트의 policy(obs)·reset(dones) 인터페이스."""
 
-    def __init__(self, checkpoint_path: str, device: torch.device):
+    def __init__(self, checkpoint_path: str, device: torch.device, policy_mode: str = "student"):
+        if policy_mode not in ("student", "teacher"):
+            raise ValueError("policy_mode는 student 또는 teacher여야 한다")
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         cfg = checkpoint["student_cfg"]
+        self.method = cfg["method"]
+        self.policy_mode = policy_mode
         self.model = StudentDepthModel(
             method=cfg["method"], image_hw=tuple(cfg["image_hw"]),
             feature_dim=cfg["feature_dim"], context_dim=cfg["context_dim"],
@@ -187,8 +191,10 @@ class StudentInferencePolicy:
         context, self.state = self.model.encode_step(obs["depth"], fresh, self.state)
         z = self.model.terrain_latent(context)
         self.last_z = z
+        if self.policy_mode == "teacher":
+            z = self.teacher.terrain_latent(obs["terrain_current"])
         return self.teacher.action_from_latent(obs["policy"], z)
 
     def reset(self, dones: torch.Tensor) -> None:
         if self.state is not None:
-            self.state[dones.bool()] = 0
+            self.state = torch.where(dones.bool()[:, None], torch.zeros_like(self.state), self.state)

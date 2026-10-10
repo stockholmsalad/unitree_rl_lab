@@ -40,6 +40,16 @@ class StairEvalCfg:
     viewer_env_index: int = 0
 
 
+@configclass
+class StudentFixedEvalCfg:
+    """Phase 3 student와 teacher 상한의 고정 평가 샘플 예산."""
+
+    step_heights_m: tuple[float, ...] = (0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15)
+    envs_per_height: int = 128
+    seed: int = 43
+    spawn_forward_m: float = 0.0
+
+
 def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_width: float,
                    step_width: float) -> tuple[int, float, float]:
     """IsaacLab inverted_pyramid_stairs_terrain과 같은 단 수, 첫 단, 상단 경계 좌표."""

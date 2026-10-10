@@ -1,5 +1,13 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-10 — Phase 3 student 고정 지형 평가 구현 (Z790)
+
+`scripts/jepa_loco/eval_student_fixed.py`를 추가했다. 학습 task `Unitree-Go2-JepaLoco-StudentDepth-EasyStart`의 depth 관측(노이즈·지연·10 Hz fresh gate)과 보상·종료는 유지하고, 기존 `eval_stairs_fixed.py`의 지형 생성, 계단 origin 검사, gap 메시 검사, 성공 판정, per-env 기록을 **같은 평가 함수로 호출**한다. 따라서 학습용 EasyStart 평지 워밍업 함수가 평가 계단·gap에 섞이지 않는다. 기본값은 중심 출발 x=0, 직진 명령 0.6 m/s, seed 43, 오르는 계단 9·10·11·12·13·14·15 cm, 높이당 128 env, 1000 control step이다. 높이별 열을 원본 `MeshInvertedPyramidStairsTerrainCfg`로 만들며 생성된 모든 열의 origin z를 단 수·높이의 해석값과 비교한다. `--terrain flat/gap`과 `--audit_terrain_only`도 같은 평가 본체를 사용한다. 기본 일곱 높이는 한 실행에 896 env이므로 Z790 메모리가 부족하면 `--step_heights_m`으로 높이별 또는 쌍별로 실행한다. 이전 teacher 결과의 쌍별 env 번호와 정확히 같은 랜덤 출발 샘플을 맞추려면 같은 높이 쌍과 seed로 평가한다.
+
+체크포인트의 `student_cfg.method`를 자동 판별해 `StudentDepthModel → terrain_latent → FrozenCurrentTeacher.action_from_latent`의 분포 평균 행동을 사용한다. `--policy teacher`는 동일한 student env에서 `terrain_current → teacher z → 고정 head` 행동을 사용하며, 두 정책 모두 student latent를 계산해 오차를 기록한다. done env의 GRU/no_memory hold state는 즉시 0으로 만든다. `teacher_stats`의 고정 std로 `(student_z − teacher_z)`를 차원별 정규화한 뒤 L2 노름을 구하고, 첫 단 x ±0.4 m와 그 밖의 활성 스텝을 env별·높이별 평균으로 JSON에 추가했다. 기존 성공·per_env 필드는 유지한다. 경로가 다른 머신으로 옮겨져 통계 파일을 찾지 못하면 `--teacher_stats`로 지정한다.
+
+검증: Isaac 앱 전체 단위 테스트 **107개 통과**. Z790에서 `/tmp/student_fix_smoke_gru/model_2.pt`(학습 완료 정책이 아닌 2 iteration 스모크 체크포인트)로 9 cm, 16 env, 100 step을 seed 43으로 두 번 평가했다. 두 실행 모두 0/16 성공, 종료 분류와 출발 y가 env별로 같았다. 최대 전진 x의 실행 간 차이는 최대 약 1.65 mm로 연속 상태는 비트 단위 동일하지 않았다. `--policy teacher`도 9 cm·2 env·20 step으로 정상 완료했다. 짧은 스모크 결과를 보행 성능으로 해석하지 않는다. 기본 일곱 높이·열당 1 env의 terrain audit은 7/7 열에서 통과했고 origin z는 9~15 cm에 대해 −0.63~−1.05 m로 일치했다. 본 128 env×7 높이 평가는 실행하지 않았다.
+
 ## 2026-10-01 — Phase 0 환경 점검 (Z790)
 
 **설치 확인 (소스에서 직접):**

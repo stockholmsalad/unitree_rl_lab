@@ -1,10 +1,11 @@
 """Teacher 동결·student shape·손실·JEPA mask 테스트."""
 
 import torch
+import pytest
 from tensordict import TensorDict
 
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
-from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel
+from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel, StudentInferencePolicy
 from unitree_rl_lab.jepa_loco.models.student_batches import (
     env_batch_indices, initial_episode_lengths, jepa_pair_tensors, realized_se2_displacement, select_env_batch,
 )
@@ -389,3 +390,32 @@ def test_initial_episode_lengths_matches_runner_bounds_and_optional_disable():
     assert randomized.min() >= 0 and randomized.max() < 1000
     assert randomized.unique().numel() > 1
     torch.testing.assert_close(initial_episode_lengths(lengths, 1000, enabled=False), lengths)
+
+
+@pytest.mark.parametrize("method", ("no_memory", "gru", "gru_jepa", "gru_copy"))
+def test_student_fixed_eval_checkpoint_method_reset_and_deterministic_action(tmp_path, method):
+    """학습 checkpoint 형식을 그대로 읽고, env별 GRU reset과 평균 행동을 확인한다."""
+    teacher = _teacher()
+    cfg = StudentTrainCfg(method=method)
+    model = StudentDepthModel(method=cfg.method)
+    path = tmp_path / "model_2.pt"
+    torch.save({"model_state_dict": model.state_dict(), "student_cfg": cfg.to_dict(),
+                "teacher_state_dict": teacher.actor.state_dict(), "iteration": 2,
+                "teacher_checkpoint": "teacher.pt", "teacher_stats": "stats.pt"}, path)
+    student = StudentInferencePolicy(str(path), torch.device("cpu"))
+    oracle = StudentInferencePolicy(str(path), torch.device("cpu"), policy_mode="teacher")
+    assert student.method == oracle.method == method
+    obs = TensorDict({"depth": torch.rand(2, 2, 64, 112),
+                      "depth_fresh": torch.ones(2, 1), "policy": torch.rand(2, 45),
+                      "terrain_current": torch.rand(2, 187)}, batch_size=[2])
+    first = student(obs)
+    assert first.shape == (2, 12)
+    torch.testing.assert_close(first, student.teacher.action_from_latent(obs["policy"], student.last_z))
+    teacher_action = oracle(obs)
+    torch.testing.assert_close(teacher_action, oracle.teacher.action_from_latent(
+        obs["policy"], oracle.teacher.terrain_latent(obs["terrain_current"])))
+    student.reset(torch.tensor([True, False]))
+    assert torch.count_nonzero(student.state[0]) == 0
+    assert torch.count_nonzero(student.state[1]) > 0
+    student.reset(torch.tensor([True, True]))
+    torch.testing.assert_close(student(obs), first)

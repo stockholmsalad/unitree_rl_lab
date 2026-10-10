@@ -10,39 +10,37 @@ import argparse
 
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", choices=(
-    "Unitree-Go2-JepaLoco-DepthGRU",
-    "Unitree-Go2-JepaLoco-BlindGRU",
-    "Unitree-Go2-JepaLoco-OracleCurrent",
-    "Unitree-Go2-JepaLoco-OracleCurrent-EasyStart",
-    "Unitree-Go2-JepaLoco-OracleWide",
-    "Unitree-Go2-JepaLoco-OracleCurrentFuture",
-    "Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart",
-    "Unitree-Go2-JepaLoco-StudentDepth-EasyStart",
-), required=True)
-parser.add_argument("--checkpoint", required=True)
-parser.add_argument("--output", required=True)
-parser.add_argument("--terrain", choices=("stairs", "flat", "gap"), default="stairs")
-parser.add_argument("--spawn_forward_m", type=float, default=None)
-parser.add_argument("--episode_steps", type=int, default=None)
-parser.add_argument("--envs_per_height", type=int, default=None)
-parser.add_argument("--seed", type=int, default=None)
-parser.add_argument("--low_step_height_m", type=float, default=None)
-parser.add_argument("--high_step_height_m", type=float, default=None)
-parser.add_argument("--low_gap_width_m", type=float, default=None)
-parser.add_argument("--high_gap_width_m", type=float, default=None)
-parser.add_argument("--envs_per_width", type=int, default=None)
-parser.add_argument("--video", action="store_true", help="고정 지형 평가 env 0의 영상을 저장한다.")
-parser.add_argument("--probe_terrain", action="store_true", help="현재 heightscan을 평탄하게 바꿨을 때 행동 변화를 기록한다.")
-parser.add_argument("--flatten_terrain_input", action="store_true", help="정책 입력 heightscan의 지형 높이 차이를 제거한다.")
-parser.add_argument("--contact_diagnostics", action="store_true", help="첫 단 부근 종료 사유·접촉 body·스텝 보상을 기록한다.")
-parser.add_argument("--audit_terrain_only", action="store_true", help="실제 생성 타일의 원점·메시 z 범위를 검증하고 종료한다.")
-AppLauncher.add_app_launcher_args(parser)
-args = parser.parse_args()
-if args.video or args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart":
-    args.enable_cameras = True
-simulation_app = AppLauncher(args).app
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=(
+        "Unitree-Go2-JepaLoco-DepthGRU", "Unitree-Go2-JepaLoco-BlindGRU",
+        "Unitree-Go2-JepaLoco-OracleCurrent", "Unitree-Go2-JepaLoco-OracleCurrent-EasyStart",
+        "Unitree-Go2-JepaLoco-OracleWide", "Unitree-Go2-JepaLoco-OracleCurrentFuture",
+        "Unitree-Go2-JepaLoco-OracleCurrentFuture-EasyStart",
+        "Unitree-Go2-JepaLoco-StudentDepth-EasyStart",
+    ), required=True)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--terrain", choices=("stairs", "flat", "gap"), default="stairs")
+    parser.add_argument("--spawn_forward_m", type=float, default=None)
+    parser.add_argument("--episode_steps", type=int, default=None)
+    parser.add_argument("--envs_per_height", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--low_step_height_m", type=float, default=None)
+    parser.add_argument("--high_step_height_m", type=float, default=None)
+    parser.add_argument("--low_gap_width_m", type=float, default=None)
+    parser.add_argument("--high_gap_width_m", type=float, default=None)
+    parser.add_argument("--envs_per_width", type=int, default=None)
+    parser.add_argument("--video", action="store_true", help="고정 지형 평가 env 0의 영상을 저장한다.")
+    parser.add_argument("--probe_terrain", action="store_true", help="현재 heightscan을 평탄하게 바꿨을 때 행동 변화를 기록한다.")
+    parser.add_argument("--flatten_terrain_input", action="store_true", help="정책 입력 heightscan의 지형 높이 차이를 제거한다.")
+    parser.add_argument("--contact_diagnostics", action="store_true", help="첫 단 부근 종료 사유·접촉 body·스텝 보상을 기록한다.")
+    parser.add_argument("--audit_terrain_only", action="store_true", help="실제 생성 타일의 원점·메시 z 범위를 검증하고 종료한다.")
+    AppLauncher.add_app_launcher_args(parser)
+    args = parser.parse_args()
+    if args.video or args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart":
+        args.enable_cameras = True
+    simulation_app = AppLauncher(args).app
 
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -106,8 +104,10 @@ def check_gap_environment(env, cfg: StairEvalCfg, widths: torch.Tensor) -> list[
     )
 
 
-def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
-    env_cfg = parse_env_cfg(task, device=args.device, num_envs=2 * cfg.envs_per_height,
+def make_eval_env_cfg(task: str, cfg: StairEvalCfg, terrain_mode: str, device: str,
+                      step_heights_m: tuple[float, ...] | None = None):
+    n_groups = len(step_heights_m) if terrain_mode == "stairs" and step_heights_m else 2
+    env_cfg = parse_env_cfg(task, device=device, num_envs=n_groups * cfg.envs_per_height,
                             entry_point_key="play_env_cfg_entry_point")
     env_cfg.seed = cfg.seed
     env_cfg.episode_length_s = cfg.episode_steps * env_cfg.sim.dt * env_cfg.decimation
@@ -120,11 +120,11 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
 
     generator = env_cfg.scene.terrain.terrain_generator.copy()
     generator.num_rows = 1
-    generator.num_cols = 2 * cfg.envs_per_height
+    generator.num_cols = n_groups * cfg.envs_per_height
     generator.seed = cfg.seed
-    if args.terrain == "flat":
+    if terrain_mode == "flat":
         generator.sub_terrains = {"flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0)}
-    elif args.terrain == "gap":
+    elif terrain_mode == "gap":
         gap = generator.sub_terrains["gap"]
         generator.sub_terrains = {
             "gap_low": fixed_width_gap_cfg(gap, cfg.low_gap_width_m, 0.5),
@@ -132,10 +132,16 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
         }
     else:
         stair = generator.sub_terrains["stairs_up"]
-        generator.sub_terrains = {
-            "stairs_up_low": fixed_height_stair_cfg(stair, cfg.low_step_height_m, 0.5),
-            "stairs_up_high": fixed_height_stair_cfg(stair, cfg.high_step_height_m, 0.5),
-        }
+        if step_heights_m:
+            generator.sub_terrains = {
+                f"stairs_up_{i:02d}": fixed_height_stair_cfg(stair, height, 1.0 / n_groups)
+                for i, height in enumerate(step_heights_m)
+            }
+        else:
+            generator.sub_terrains = {
+                "stairs_up_low": fixed_height_stair_cfg(stair, cfg.low_step_height_m, 0.5),
+                "stairs_up_high": fixed_height_stair_cfg(stair, cfg.high_step_height_m, 0.5),
+            }
     env_cfg.scene.terrain.terrain_generator = generator
     env_cfg.scene.terrain.max_init_terrain_level = 0
 
@@ -155,7 +161,10 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg):
     return env_cfg
 
 
-def main():
+def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
+         policy_factory=None, latent_stats=None):
+    if args is None:
+        args = globals()["args"]
     cfg = StairEvalCfg()
     if args.spawn_forward_m is not None:
         cfg.spawn_forward_m = args.spawn_forward_m
@@ -183,7 +192,11 @@ def main():
         raise ValueError("계단 높이는 0보다 크고 low < high여야 한다")
     if cfg.low_gap_width_m <= 0 or cfg.high_gap_width_m <= cfg.low_gap_width_m:
         raise ValueError("gap 폭은 0보다 크고 low < high여야 한다")
-    env_cfg = make_eval_env_cfg(args.task, cfg)
+    if step_heights_m is not None and (len(step_heights_m) < 1 or
+                                      any(h <= 0 for h in step_heights_m) or
+                                      tuple(sorted(set(step_heights_m))) != tuple(step_heights_m)):
+        raise ValueError("계단 높이 목록은 양수이고 중복 없이 오름차순이어야 한다")
+    env_cfg = make_eval_env_cfg(args.task, cfg, args.terrain, args.device, step_heights_m)
     student_task = args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     if student_task:
         agent_cfg = OracleCurrentPPORunnerCfg()
@@ -227,11 +240,12 @@ def main():
         )
         if not torch.allclose(actual_origins, expected_origins, atol=cfg.terrain_height_tolerance_m, rtol=0):
             raise ValueError("시뮬레이터에 올린 타일 원점과 재생성 메시 원점이 다르다")
-        stair_cfg = generator_cfg.sub_terrains["stairs_up_low"]
+        stair_cfg = next(iter(generator_cfg.sub_terrains.values()))
         count, _, _ = stair_geometry(generator_cfg.size, stair_cfg.border_width,
                                      stair_cfg.platform_width, stair_cfg.step_width)
-        heights = torch.where(terrain.terrain_types < cfg.envs_per_height,
-                              cfg.low_step_height_m, cfg.high_step_height_m)
+        height_values = step_heights_m or (cfg.low_step_height_m, cfg.high_step_height_m)
+        heights = torch.as_tensor(height_values, device=terrain.terrain_types.device)[
+            terrain.terrain_types // cfg.envs_per_height]
         validate_stair_origins(terrain.env_origins[:, 2], heights, count, cfg.terrain_height_tolerance_m)
         columns = []
         for col in range(generator_cfg.num_cols):
@@ -266,7 +280,9 @@ def main():
         )
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     if student_task:
-        policy = StudentInferencePolicy(str(Path(args.checkpoint).resolve()), torch.device(env.unwrapped.device))
+        policy = (policy_factory(str(Path(args.checkpoint).resolve()), torch.device(env.unwrapped.device))
+                  if policy_factory is not None else
+                  StudentInferencePolicy(str(Path(args.checkpoint).resolve()), torch.device(env.unwrapped.device)))
     else:
         runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
         runner.load(str(Path(args.checkpoint).resolve()))
@@ -304,13 +320,14 @@ def main():
     command_sample = env.unwrapped.command_manager.get_command("base_velocity")[0].detach().cpu().tolist()
 
     if args.terrain == "stairs":
-        stair_cfg = env_cfg.scene.terrain.terrain_generator.sub_terrains["stairs_up_low"]
+        stair_cfg = next(iter(env_cfg.scene.terrain.terrain_generator.sub_terrains.values()))
         count, first_riser, top_edge = stair_geometry(env_cfg.scene.terrain.terrain_generator.size,
                                          stair_cfg.border_width, stair_cfg.platform_width, stair_cfg.step_width)
     else:
         count, first_riser, top_edge = 0, None, 0.0
-    heights = torch.where(terrain.terrain_types < cfg.envs_per_height, cfg.low_step_height_m,
-                          cfg.high_step_height_m).to(env.unwrapped.device)
+    height_values = step_heights_m or (cfg.low_step_height_m, cfg.high_step_height_m)
+    heights = torch.as_tensor(height_values, device=env.unwrapped.device)[
+        terrain.terrain_types // cfg.envs_per_height]
     if args.terrain == "stairs":
         validate_stair_origins(origin[:, 2], heights, count, cfg.terrain_height_tolerance_m)
     gap_inner_edge = None
@@ -387,6 +404,13 @@ def main():
 
     env.unwrapped._reset_idx = capture_reset
 
+    latent_sums = latent_counts = None
+    if latent_stats is not None:
+        latent_sums = torch.zeros((env.num_envs, 2), device=env.unwrapped.device)
+        latent_counts = torch.zeros_like(latent_sums)
+        _, latent_std = latent_stats
+        latent_std = latent_std.to(env.unwrapped.device)
+
     for step in range(cfg.episode_steps):
         if args.contact_diagnostics and args.terrain == "stairs":
             step_index[0] = step + 1
@@ -399,6 +423,17 @@ def main():
                 scan = action_obs["terrain_current"]
                 action_obs["terrain_current"] = scan.amax(dim=1, keepdim=True).expand_as(scan)
             actions = policy(action_obs)
+            if latent_sums is not None:
+                teacher_z = policy.teacher.terrain_latent(obs["terrain_current"])
+                latent_error = torch.linalg.vector_norm(
+                    (policy.last_z - teacher_z) / latent_std, dim=-1)
+                relative_x = robot.data.root_pos_w[:, 0] - origin[:, 0]
+                near = ((relative_x - first_riser).abs() <= cfg.contact_probe_margin_m
+                        if args.terrain == "stairs" else torch.zeros_like(active))
+                for bucket, selected in enumerate((near, ~near)):
+                    selected = active & selected
+                    latent_sums[:, bucket] += torch.where(selected, latent_error, 0.0)
+                    latent_counts[:, bucket] += selected.float()
             obs, rewards, dones, extras = env.step(actions)
             reward_term_sums += torch.where(
                 active[:, None], reward_terms._step_reward * env.unwrapped.step_dt, 0.0,
@@ -524,6 +559,17 @@ def main():
               "success_rule": success_rule,
               "groups": {}, "trace": trace, "foot_names": foot_names,
               "contact_diagnostics": contact_diagnostics if args.contact_diagnostics else None}
+    if student_task:
+        report["student_method"] = policy.method
+        report["policy_mode"] = policy.policy_mode
+    if step_heights_m is not None:
+        report["step_heights_m"] = list(step_heights_m)
+    if latent_sums is not None:
+        report["latent_error_definition"] = "L2 norm of (student_z - teacher_z) / fixed teacher_z std"
+        report["latent_error_regions"] = {
+            "near_first_step": f"abs(body_x - first_riser_x) <= {cfg.contact_probe_margin_m} m",
+            "elsewhere": "other active policy steps",
+        }
     if args.terrain == "gap":
         report["gap_inner_edge_m"] = gap_inner_edge
         report["gap_outer_edge_m"] = {"low": gap_inner_edge + cfg.low_gap_width_m,
@@ -535,11 +581,15 @@ def main():
         selections = (("low", gap_widths == cfg.low_gap_width_m),
                       ("high", gap_widths == cfg.high_gap_width_m))
     else:
-        selections = (("low", heights == cfg.low_step_height_m),
-                      ("high", heights == cfg.high_step_height_m))
+        if step_heights_m is None:
+            selections = (("low", terrain.terrain_types < cfg.envs_per_height),
+                          ("high", terrain.terrain_types >= cfg.envs_per_height))
+        else:
+            selections = tuple((f"{height:.2f}", terrain.terrain_types // cfg.envs_per_height == i)
+                               for i, height in enumerate(step_heights_m))
     for name, sel in selections:
         report["groups"][name] = {
-            "step_height_m": None if args.terrain != "stairs" else cfg.low_step_height_m if name == "low" else cfg.high_step_height_m,
+            "step_height_m": None if args.terrain != "stairs" else heights[sel][0].item(),
             "n": int(sel.sum().item()), "success_rate": success[sel].float().mean().item(),
             "non_timeout_rate": failed[sel].float().mean().item(),
             "timeout_rate": timed_out[sel].float().mean().item(),
@@ -561,6 +611,13 @@ def main():
         if args.terrain == "gap":
             report["groups"][name]["gap_width_m"] = cfg.low_gap_width_m if name == "low" else cfg.high_gap_width_m
             report["groups"][name]["max_body_drop_m_mean"] = (start_z[sel] - min_body_z[sel]).clamp(min=0).mean().item()
+        if latent_sums is not None:
+            report["groups"][name]["latent_error"] = {
+                key: {"mean": (latent_sums[sel, i].sum() / latent_counts[sel, i].sum()).item()
+                       if latent_counts[sel, i].sum() > 0 else None,
+                      "samples": int(latent_counts[sel, i].sum().item())}
+                for i, key in enumerate(("near_first_step", "elsewhere"))
+            }
     def _unmet(env_id: int) -> list[str]:
         if success[env_id]:
             return []
@@ -585,6 +642,13 @@ def main():
         "last_x_m": last_xy[i, 0].item(), "last_y_m": last_xy[i, 1].item(), "last_yaw_rad": last_yaw[i].item(),
         "max_consecutive_reached": int(max_consecutive[i].item()),
         "unmet_success_conditions": _unmet(i),
+        **({"latent_error_near_first_step_mean":
+            (latent_sums[i, 0] / latent_counts[i, 0]).item() if latent_counts[i, 0] > 0 else None,
+            "latent_error_elsewhere_mean":
+            (latent_sums[i, 1] / latent_counts[i, 1]).item() if latent_counts[i, 1] > 0 else None,
+            "latent_error_near_first_step_samples": int(latent_counts[i, 0].item()),
+            "latent_error_elsewhere_samples": int(latent_counts[i, 1].item())}
+           if latent_sums is not None else {}),
         **({
             "gap_width_m": gap_widths[i].item(),
             "max_forward_to_inner_edge_m": max_outward[i].item() - gap_inner_edge,
