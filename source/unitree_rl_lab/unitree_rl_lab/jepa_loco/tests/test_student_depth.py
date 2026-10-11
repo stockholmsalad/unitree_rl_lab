@@ -414,6 +414,12 @@ def test_student_fixed_eval_checkpoint_method_reset_and_deterministic_action(tmp
     teacher_action = oracle(obs)
     torch.testing.assert_close(teacher_action, oracle.teacher.action_from_latent(
         obs["policy"], oracle.teacher.terrain_latent(obs["terrain_current"])))
+    oracle_zero = StudentInferencePolicy(str(path), torch.device("cpu"), policy_mode="teacher",
+                                         teacher_std=torch.ones(32), latent_noise_std=0.0,
+                                         latent_noise_mode="episode", noise_seed=43)
+    torch.testing.assert_close(teacher_action, oracle_zero(obs), rtol=0, atol=0)
+    torch.testing.assert_close(oracle_zero.last_action_latent,
+                               oracle_zero.teacher.terrain_latent(obs["terrain_current"]), rtol=0, atol=0)
     student.reset(torch.tensor([True, False]))
     assert torch.count_nonzero(student.state[0]) == 0
     assert torch.count_nonzero(student.state[1]) > 0

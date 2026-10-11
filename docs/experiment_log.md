@@ -1,5 +1,17 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-11 — Phase 3 student 평가: teacher latent 잡음·행동 오차·평지 경계 조사
+
+**관찰과 검증할 가설(사용자 제공, Z790 model_3000, 높이당 128 env):** 13 cm 계단 성공(/128)은 teacher 3, GRU 7~9, GRU+JEPA 31~32, GRU+copy 52~55이며 GRU+copy는 14 cm도 26~30이다. 10 cm gap은 teacher 0/256(모두 timeout 정지), GRU 2, GRU+copy 43, no-memory 123이며 GRU+copy는 gap에서 125/256 넘어졌다. 12 cm 첫 단 근처 teacher std 정규화 latent L2 오차는 GRU 1.73, GRU+JEPA 2.91, GRU+copy 3.95였다. **가설:** 정확한 지형 latent를 받은 고정 teacher head는 큰 계단·gap 앞에서 정지하고, latent 오차가 커지면 시도가 늘어난다. 성공률뿐 아니라 넘어짐도 함께 비교해야 한다.
+
+**평가 코드:** `eval_student_fixed.py --policy teacher --latent_noise_std σ --latent_noise_mode step|episode`를 추가했다. `z_noisy=z_T+std_T·σ·ε`이며 별도 CPU RNG를 평가 seed로 고정한다. step 모드는 제어 스텝마다, episode 모드는 시작 시와 해당 env reset 시에만 ε를 새로 뽑는다. σ=0은 latent를 그대로 반환하며 RNG도 소비하지 않는다. JSON의 `latent_noise_std`, `latent_noise_mode`, 기존 `latent_error`는 이제 실제 행동에 사용한 terrain latent와 `z_T` 사이의 고정 teacher std 정규화 L2를 나타낸다. Student 모드에는 같은 구역(첫 단 x ±0.4 m / 그 외)에서 결정적 student 행동과 결정적 teacher 행동의 12차원 L2를 env별·그룹별로 기록한다. 실행 행동은 그대로 student 행동이다. 본 sweep은 **미실행**이다.
+
+**검증:** Isaac 앱 테스트 111개 통과. Z790의 GRU 2-iteration 스모크 체크포인트(내장 teacher는 확정 teacher)를 사용해 13 cm·16 env·200 step·seed 43을 평가했다. 기존 teacher와 명시적 σ=0은 per-env outcome·done step·max forward가 정확히 같고 정규화 latent 오차가 0이었다. σ=0.5 step은 첫 단 근처 평균 오차 2.803, 그 외 2.797로 32차원 Gaussian 기대치 `sqrt(32)·0.5≈2.83`과 맞았다. 짧은 실행에서 세 조건 모두 성공 0/16이므로 보행 성능 결론에는 사용하지 않는다. Student 스모크의 행동 L2는 첫 단 근처 1.522(1170 active sample), 그 외 0.327(1411 sample)로 출력됐다.
+
+**평지 평가의 경계 문제:** 저장된 `gru_s43_3000_flat_teacher.json`에서 `base_contact` 27/256 중 26개는 종료 몸통 x가 +4 m 이상, 나머지 하나도 x=3.998 m였다(중앙값 4.126 m, 최대 5.367 m). Student 네 조건의 base_contact도 전부 x≥3.9 m에서 발생했다. 평가 생성기는 `num_rows=1`, 타일 크기 8×8 m이고 평면 타일의 +x 경계는 원점 기준 +4 m이다. IsaacLab은 바깥에 높이 1 m의 border mesh를 덧붙인다. 따라서 종료는 평지 보행 자체보다 **타일과 border의 접합부 통과**와 강하게 연관된다. 접합부에서 로봇이 실제로 추락했는지/충돌했는지는 현재 JSON에 종료 z가 없어 확정할 수 없다. 모든 방법의 평균 max-forward≈5.07 m도 같은 경계가 평가를 제한한 것으로 해석된다. flat 모드는 계단 상단·gap 바깥처럼 통과할 장애물과 성공 기하가 없어 `success_rule=None`이며 기존 `success=false`는 실패율로 읽으면 안 된다.
+
+**수정 후보(미적용, 사용자 결정 대기):** (A) flat 평가만 타일 x 크기를 늘려 경계를 평가 거리 밖으로 보낸다(20 s 평가 길이를 유지하며 가장 직접적). (B) flat 평가 시간을 줄여 +4 m 전에 종료한다(관찰 시간이 짧아진다). (C) 경계 직전 도달을 평가 종료/검열로 처리한다(환경 접합부 충돌을 성능 집계에서 제외하지만 성공 판정 정의가 필요하다). 어느 선택지도 이번 코드 변경에는 적용하지 않았다.
+
 ## 2026-10-10 — Student 고정 평가 viewer·접촉 진단 옵션
 
 `eval_student_fixed.py`에 `--viewer_env_index N`(기본 0)과 `--contact_diagnostics`를 추가했다. viewer 번호는 공통 `StairEvalCfg.viewer_env_index`를 거쳐 영상 대상 env에 적용하고, 범위를 검사한다. 접촉 진단은 student·`--policy teacher` 모두 기존 고정 계단 평가의 첫 단 ±0.4 m 종료 사유, 접촉 body, 스텝 보상 기록을 사용한다. 추가로 보상 설정과 동일한 접촉력·air-time 기준으로 실제 스윙 중인 앞발의 첫 단 근처 최고 z를 env별·그룹별로 기록한다. 진단 위치 검사에는 signed body x를 사용한다.

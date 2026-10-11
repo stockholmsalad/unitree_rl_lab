@@ -11,6 +11,7 @@ from torch import nn
 from .backbone import make_backbone
 from .depth_cnn import DepthCNN
 from .oracle_actor import OracleTerrainActor
+from unitree_rl_lab.jepa_loco.eval.latent_noise import TeacherLatentNoise
 
 
 class FrozenCurrentTeacher(nn.Module):
@@ -162,7 +163,9 @@ class StudentDepthModel(nn.Module):
 class StudentInferencePolicy:
     """기존 고정 지형 평가 스크립트의 policy(obs)·reset(dones) 인터페이스."""
 
-    def __init__(self, checkpoint_path: str, device: torch.device, policy_mode: str = "student"):
+    def __init__(self, checkpoint_path: str, device: torch.device, policy_mode: str = "student",
+                 teacher_std: torch.Tensor | None = None, latent_noise_std: float = 0.0,
+                 latent_noise_mode: str = "step", noise_seed: int = 0):
         if policy_mode not in ("student", "teacher"):
             raise ValueError("policy_mode는 student 또는 teacher여야 한다")
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -180,8 +183,13 @@ class StudentInferencePolicy:
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.eval()
         self.teacher = FrozenCurrentTeacher(checkpoint["teacher_state_dict"]).to(device)
+        if latent_noise_std > 0 and (policy_mode != "teacher" or teacher_std is None):
+            raise ValueError("teacher 잡음은 teacher 정책과 teacher std가 필요하다")
+        self.latent_noise = (TeacherLatentNoise(teacher_std, latent_noise_std, latent_noise_mode, noise_seed)
+                             if policy_mode == "teacher" and teacher_std is not None else None)
         self.state: torch.Tensor | None = None
         self.last_z: torch.Tensor | None = None
+        self.last_action_latent: torch.Tensor | None = None
         # no_memory도 10 Hz 프레임을 유지하는 상태가 있으므로 종료 시 초기화한다.
         self.is_recurrent = True
 
@@ -193,8 +201,13 @@ class StudentInferencePolicy:
         self.last_z = z
         if self.policy_mode == "teacher":
             z = self.teacher.terrain_latent(obs["terrain_current"])
+            if self.latent_noise is not None:
+                z = self.latent_noise.apply(z)
+        self.last_action_latent = z
         return self.teacher.action_from_latent(obs["policy"], z)
 
     def reset(self, dones: torch.Tensor) -> None:
         if self.state is not None:
             self.state = torch.where(dones.bool()[:, None], torch.zeros_like(self.state), self.state)
+        if self.latent_noise is not None:
+            self.latent_noise.reset(dones)

@@ -416,11 +416,15 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     env.unwrapped._reset_idx = capture_reset
 
     latent_sums = latent_counts = None
+    action_error_sums = action_error_counts = None
     if latent_stats is not None:
         latent_sums = torch.zeros((env.num_envs, 2), device=env.unwrapped.device)
         latent_counts = torch.zeros_like(latent_sums)
         _, latent_std = latent_stats
         latent_std = latent_std.to(env.unwrapped.device)
+        if student_task and policy.policy_mode == "student":
+            action_error_sums = torch.zeros_like(latent_sums)
+            action_error_counts = torch.zeros_like(latent_counts)
 
     for step in range(cfg.episode_steps):
         if args.contact_diagnostics and args.terrain == "stairs":
@@ -437,7 +441,10 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             if latent_sums is not None:
                 teacher_z = policy.teacher.terrain_latent(obs["terrain_current"])
                 latent_error = torch.linalg.vector_norm(
-                    (policy.last_z - teacher_z) / latent_std, dim=-1)
+                    (policy.last_action_latent - teacher_z) / latent_std, dim=-1)
+                if action_error_sums is not None:
+                    teacher_actions = policy.teacher.action_from_latent(obs["policy"], teacher_z)
+                    action_error = torch.linalg.vector_norm(actions - teacher_actions, dim=-1)
                 relative_x = robot.data.root_pos_w[:, 0] - origin[:, 0]
                 near = ((relative_x - first_riser).abs() <= cfg.contact_probe_margin_m
                         if args.terrain == "stairs" else torch.zeros_like(active))
@@ -445,6 +452,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                     selected = active & selected
                     latent_sums[:, bucket] += torch.where(selected, latent_error, 0.0)
                     latent_counts[:, bucket] += selected.float()
+                    if action_error_sums is not None:
+                        action_error_sums[:, bucket] += torch.where(selected, action_error, 0.0)
+                        action_error_counts[:, bucket] += selected.float()
             obs, rewards, dones, extras = env.step(actions)
             reward_term_sums += torch.where(
                 active[:, None], reward_terms._step_reward * env.unwrapped.step_dt, 0.0,
@@ -585,14 +595,18 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     if student_task:
         report["student_method"] = policy.method
         report["policy_mode"] = policy.policy_mode
+        report["latent_noise_std"] = policy.latent_noise.sigma if policy.latent_noise is not None else 0.0
+        report["latent_noise_mode"] = policy.latent_noise.mode if policy.latent_noise is not None else None
     if step_heights_m is not None:
         report["step_heights_m"] = list(step_heights_m)
     if latent_sums is not None:
-        report["latent_error_definition"] = "L2 norm of (student_z - teacher_z) / fixed teacher_z std"
+        report["latent_error_definition"] = "L2 norm of (action terrain latent - teacher_z) / fixed teacher_z std"
         report["latent_error_regions"] = {
             "near_first_step": f"abs(body_x - first_riser_x) <= {cfg.contact_probe_margin_m} m",
             "elsewhere": "other active policy steps",
         }
+    if action_error_sums is not None:
+        report["action_error_definition"] = "L2 norm of deterministic student action - deterministic teacher action (12 joints)"
     if args.terrain == "gap":
         report["gap_inner_edge_m"] = gap_inner_edge
         report["gap_outer_edge_m"] = {"low": gap_inner_edge + cfg.low_gap_width_m,
@@ -647,6 +661,13 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                       "samples": int(latent_counts[sel, i].sum().item())}
                 for i, key in enumerate(("near_first_step", "elsewhere"))
             }
+        if action_error_sums is not None:
+            report["groups"][name]["action_error"] = {
+                key: {"mean": (action_error_sums[sel, i].sum() / action_error_counts[sel, i].sum()).item()
+                       if action_error_counts[sel, i].sum() > 0 else None,
+                      "samples": int(action_error_counts[sel, i].sum().item())}
+                for i, key in enumerate(("near_first_step", "elsewhere"))
+            }
     def _unmet(env_id: int) -> list[str]:
         if success[env_id]:
             return []
@@ -681,6 +702,15 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             "latent_error_near_first_step_samples": int(latent_counts[i, 0].item()),
             "latent_error_elsewhere_samples": int(latent_counts[i, 1].item())}
            if latent_sums is not None else {}),
+        **({"action_error_near_first_step_mean":
+            (action_error_sums[i, 0] / action_error_counts[i, 0]).item()
+            if action_error_counts[i, 0] > 0 else None,
+            "action_error_elsewhere_mean":
+            (action_error_sums[i, 1] / action_error_counts[i, 1]).item()
+            if action_error_counts[i, 1] > 0 else None,
+            "action_error_near_first_step_samples": int(action_error_counts[i, 0].item()),
+            "action_error_elsewhere_samples": int(action_error_counts[i, 1].item())}
+           if action_error_sums is not None else {}),
         **({
             "gap_width_m": gap_widths[i].item(),
             "max_forward_to_inner_edge_m": max_outward[i].item() - gap_inner_edge,

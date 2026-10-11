@@ -20,6 +20,9 @@ parser.add_argument("--low_gap_width_m", type=float, default=None)
 parser.add_argument("--high_gap_width_m", type=float, default=None)
 parser.add_argument("--teacher_stats", type=str, default=None,
                     help="체크포인트에 기록된 통계 경로가 이 머신에서 다를 때 지정한다.")
+parser.add_argument("--latent_noise_std", type=float, default=None,
+                    help="teacher latent에 teacher std 단위 Gaussian 잡음을 더한다.")
+parser.add_argument("--latent_noise_mode", choices=("step", "episode"), default=None)
 parser.add_argument("--output", type=str, default=None)
 parser.add_argument("--video", action="store_true")
 parser.add_argument("--viewer_env_index", type=int, default=None,
@@ -40,10 +43,14 @@ from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy
 
 
 def main() -> None:
+    noise_requested = args.latent_noise_std is not None or args.latent_noise_mode is not None
     defaults = StudentFixedEvalCfg()
-    for name in ("step_heights_m", "envs_per_height", "seed", "spawn_forward_m", "viewer_env_index"):
+    for name in ("step_heights_m", "envs_per_height", "seed", "spawn_forward_m", "viewer_env_index",
+                 "latent_noise_std", "latent_noise_mode"):
         if getattr(args, name) is None:
             setattr(args, name, getattr(defaults, name))
+    if noise_requested and args.policy != "teacher":
+        raise ValueError("latent 잡음 옵션은 --policy teacher에서만 사용한다")
     checkpoint_path = Path(args.checkpoint).resolve()
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     method = checkpoint["student_cfg"]["method"]
@@ -58,7 +65,8 @@ def main() -> None:
         print("[WARN] checkpoint와 teacher 통계의 원래 경로가 다르다. 파일 이동 여부를 확인해라.", flush=True)
     output = Path(args.output) if args.output else Path("results/jepa_loco/student/eval") / (
         f"{method}_s{args.seed}_{iteration}_{args.terrain}"
-        f"{'_teacher' if args.policy == 'teacher' else ''}.json")
+        f"{'_teacher' if args.policy == 'teacher' else ''}"
+        f"{'_noise' + format(args.latent_noise_std, 'g') + '_' + args.latent_noise_mode if noise_requested else ''}.json")
     args.output = str(output)
     args.task = "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     args.low_step_height_m = None
@@ -69,7 +77,10 @@ def main() -> None:
     heights = tuple(args.step_heights_m) if args.terrain == "stairs" else None
     run_fixed_eval(
         args, step_heights_m=heights,
-        policy_factory=lambda path, device: StudentInferencePolicy(path, device, policy_mode=args.policy),
+        policy_factory=lambda path, device: StudentInferencePolicy(
+            path, device, policy_mode=args.policy, teacher_std=stats["std"],
+            latent_noise_std=args.latent_noise_std, latent_noise_mode=args.latent_noise_mode,
+            noise_seed=args.seed),
         latent_stats=(stats["mean"], stats["std"]),
     )
 

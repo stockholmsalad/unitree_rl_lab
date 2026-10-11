@@ -49,6 +49,8 @@ class StudentFixedEvalCfg:
     seed: int = 43
     spawn_forward_m: float = 0.0
     viewer_env_index: int = 0
+    latent_noise_std: float = 0.0
+    latent_noise_mode: str = "step"
 
 
 def stair_geometry(size_xy: tuple[float, float], border_width: float, platform_width: float,
