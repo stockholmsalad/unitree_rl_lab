@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from unitree_rl_lab.jepa_loco.eval.stairs import (
-    StudentFixedEvalCfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
+    StairEvalCfg, StudentFixedEvalCfg, boundary_stop_x, evaluation_stop_step,
+    fixed_height_stair_cfg, stair_geometry, stair_progress,
     unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
 )
 from unitree_rl_lab.jepa_loco.envs.easy_start_terrain import EasyUpCfg
@@ -75,3 +76,25 @@ def test_student_fixed_viewer_default_and_swing_peak_mask():
     next_peak = update_swing_foot_peak(updated, foot_z + 0.02, torch.zeros_like(force),
                                        air_time, torch.tensor([True, True]), 1.0, 0.05)
     assert next_peak.tolist() == pytest.approx([0.20, 0.32])
+
+
+def test_boundary_stop_respects_spawn_and_tile_edge():
+    assert StairEvalCfg().boundary_stop_forward_m == 3.5
+    limits = boundary_stop_x(torch.tensor([0.0, 1.0]), 3.5, 8.0, 0.5)
+    assert limits.tolist() == pytest.approx([3.5, 3.5])
+    with pytest.raises(ValueError):
+        boundary_stop_x(torch.tensor([3.5]), 3.5, 8.0, 0.5)
+
+
+def test_evaluation_stop_success_boundary_and_inactive_masks():
+    live = torch.tensor([True, True, True, True, False])
+    reached = torch.tensor([True, False, True, False, True])
+    boundary = torch.tensor([True, True, False, False, True])
+    success, stopped, active = evaluation_stop_step(live, reached, boundary, flat=False)
+    assert success.tolist() == [True, False, True, False, False]
+    assert stopped.tolist() == [False, True, False, False, False]
+    assert active.tolist() == [False, False, False, True, False]
+    flat_success, flat_stopped, flat_active = evaluation_stop_step(live, reached, boundary, flat=True)
+    assert flat_success.tolist() == [True, True, True, False, False]
+    assert not flat_stopped.any()
+    assert flat_active.tolist() == [False, False, False, True, False]

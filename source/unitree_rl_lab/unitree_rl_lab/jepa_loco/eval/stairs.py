@@ -21,6 +21,8 @@ class StairEvalCfg:
     top_position_margin_m: float = 0.1
     spawn_lateral_range_m: float = 0.25
     spawn_forward_m: float = 1.0
+    boundary_stop_forward_m: float = 3.5
+    boundary_edge_margin_m: float = 0.5
     gap_spawn_forward_m: float = 0.0
     gap_probe_ray_height_m: float = 20.0
     gap_probe_inner_inset_m: float = 0.05
@@ -129,3 +131,24 @@ def unmet_success_conditions(success: bool, height_ever: bool,
     if height_ever and position_ever:
         missing.append("hold_steps" if reached_ever else "simultaneous_conditions")
     return missing
+
+
+def boundary_stop_x(start_x: torch.Tensor, forward_m: float, tile_length_m: float,
+                    edge_margin_m: float) -> torch.Tensor:
+    """출발점 기준 정지 거리와 타일 끝 안전 여유 중 먼저 도달하는 x."""
+    if forward_m <= 0 or tile_length_m <= 0 or not 0 < edge_margin_m < tile_length_m / 2:
+        raise ValueError("경계 거리와 타일 끝 여유가 올바르지 않다")
+    limit = torch.minimum(start_x + forward_m, torch.full_like(start_x, tile_length_m / 2 - edge_margin_m))
+    if (limit <= start_x).any():
+        raise ValueError("출발점이 평가 경계 정지 위치를 넘었다")
+    return limit
+
+
+def evaluation_stop_step(still_active: torch.Tensor, newly_successful: torch.Tensor,
+                         boundary_hit: torch.Tensor, flat: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """성공 우선으로 이번 스텝의 성공·경계 종료와 다음 스텝 활성 마스크를 계산."""
+    if still_active.shape != newly_successful.shape or still_active.shape != boundary_hit.shape:
+        raise ValueError("평가 정지 마스크는 같은 shape이어야 한다")
+    success = still_active & (newly_successful | (boundary_hit & flat))
+    boundary = still_active & boundary_hit & ~success
+    return success, boundary, still_active & ~success & ~boundary

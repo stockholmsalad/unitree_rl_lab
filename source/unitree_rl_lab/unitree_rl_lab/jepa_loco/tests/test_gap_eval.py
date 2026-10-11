@@ -11,6 +11,7 @@ from unitree_rl_lab.jepa_loco.eval.gap import (
     fixed_width_gap_cfg, gap_failure_reason, gap_geometry, gap_success_step,
     validate_gap_origins, validate_gap_tiles,
 )
+from unitree_rl_lab.jepa_loco.eval.stairs import evaluation_stop_step
 
 
 def test_gap_geometry_and_original_function_from_easy_template():
@@ -65,6 +66,22 @@ def test_gap_hold_requires_live_crossing_and_success_latches_after_done():
                                       torch.tensor([False, False]), count, success,
                                       margin_m=0.10, hold_steps=25)
     assert success.tolist() == [True, False]
+
+
+def test_gap_success_is_confirmed_before_boundary_stop():
+    active = torch.tensor([True, True])
+    consecutive = torch.tensor([24, 0])
+    candidate_count, candidate_success = gap_success_step(
+        torch.tensor([3.51, 3.51]), torch.tensor([1.7, 1.7]), active,
+        consecutive, torch.zeros(2, dtype=torch.bool), margin_m=0.1, hold_steps=25,
+    )
+    success, boundary, next_active = evaluation_stop_step(
+        active, candidate_success, torch.tensor([True, True]), flat=False,
+    )
+    assert candidate_count.tolist() == [25, 1]
+    assert success.tolist() == [True, False]
+    assert boundary.tolist() == [False, True]
+    assert not next_active.any()
 
 
 def test_gap_failure_reasons():

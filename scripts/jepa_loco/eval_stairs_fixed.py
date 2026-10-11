@@ -24,6 +24,7 @@ if __name__ == "__main__":
     parser.add_argument("--terrain", choices=("stairs", "flat", "gap"), default="stairs")
     parser.add_argument("--spawn_forward_m", type=float, default=None)
     parser.add_argument("--episode_steps", type=int, default=None)
+    parser.add_argument("--boundary_stop_forward_m", type=float, default=None)
     parser.add_argument("--envs_per_height", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--low_step_height_m", type=float, default=None)
@@ -58,7 +59,7 @@ import unitree_rl_lab.tasks  # noqa: E402, F401
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg  # noqa: E402
 from isaaclab_tasks.utils import load_cfg_from_registry  # noqa: E402
 from unitree_rl_lab.jepa_loco.eval.stairs import (  # noqa: E402
-    StairEvalCfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
+    StairEvalCfg, boundary_stop_x, evaluation_stop_step, fixed_height_stair_cfg, stair_geometry, stair_progress,
     unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
 )
 from unitree_rl_lab.jepa_loco.eval.gap import (  # noqa: E402
@@ -172,6 +173,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         cfg.viewer_env_index = args.viewer_env_index
     if args.episode_steps is not None:
         cfg.episode_steps = args.episode_steps
+    if getattr(args, "boundary_stop_forward_m", None) is not None:
+        cfg.boundary_stop_forward_m = args.boundary_stop_forward_m
     if args.envs_per_height is not None:
         cfg.envs_per_height = args.envs_per_height
     if args.seed is not None:
@@ -321,6 +324,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     # env별 기록용 출발 자세 (원점 기준 xy, yaw)
     import isaaclab.utils.math as math_utils
     start_xy = (robot.data.root_pos_w[:, :2] - origin[:, :2]).clone()
+    boundary_x = boundary_stop_x(start_xy[:, 0], cfg.boundary_stop_forward_m,
+                                 env_cfg.scene.terrain.terrain_generator.size[0], cfg.boundary_edge_margin_m)
     start_yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2].clone()
     command_sample = env.unwrapped.command_manager.get_command("base_velocity")[0].detach().cpu().tolist()
 
@@ -346,6 +351,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     success = torch.zeros_like(active)
     failed = torch.zeros_like(active)
     timed_out = torch.zeros_like(active)
+    boundary_reached = torch.zeros_like(active)
+    eval_stop_step = torch.full((env.num_envs,), -1, device=env.unwrapped.device, dtype=torch.long)
     max_steps = torch.zeros(env.num_envs, device=env.unwrapped.device)
     max_outward = torch.zeros_like(max_steps)
     min_body_drop = torch.zeros_like(max_steps)
@@ -395,7 +402,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         if args.contact_diagnostics and args.terrain == "stairs":
             root_x = robot.data.root_pos_w[ids, 0] - origin[ids, 0]
             for env_id, distance in zip(ids.tolist(), root_x.tolist()):
-                if abs(distance - first_riser) > cfg.contact_probe_margin_m:
+                if not active[env_id] or abs(distance - first_riser) > cfg.contact_probe_margin_m:
                     continue
                 force = contact_sensor.data.net_forces_w[env_id, contact_ids].norm(dim=-1)
                 recent_force = contact_sensor.data.net_forces_w_history[env_id, :, contact_ids].norm(dim=-1).amax(dim=0)
@@ -535,16 +542,21 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                 peak_front_foot_z_settled = torch.where(still_active, torch.maximum(peak_front_foot_z_settled, front_z), peak_front_foot_z_settled)
             min_body_drop = torch.where(still_active, torch.minimum(min_body_drop, progress), min_body_drop)
             if args.terrain == "gap":
-                consecutive, success = gap_success_step(
+                consecutive, candidate_success = gap_success_step(
                     forward, gap_outer_edges, still_active, consecutive, success,
                     cfg.top_position_margin_m, cfg.hold_steps,
                 )
             else:
                 consecutive = torch.where(still_active & reached, consecutive + 1, torch.zeros_like(consecutive))
+                candidate_success = consecutive >= cfg.hold_steps if args.terrain == "stairs" else torch.zeros_like(active)
             max_consecutive = torch.maximum(max_consecutive, consecutive)
-            if args.terrain != "gap":
-                success |= consecutive >= cfg.hold_steps
-            active = still_active
+            new_success, new_boundary, active = evaluation_stop_step(
+                still_active, candidate_success, forward >= boundary_x, args.terrain == "flat",
+            )
+            success |= new_success
+            boundary_reached |= new_boundary
+            eval_stop_step = torch.where((just_done | new_success | new_boundary) & (eval_stop_step < 0),
+                                         step + 1, eval_stop_step)
             if (step % cfg.trace_interval_steps == 0 or step == cfg.episode_steps - 1) and active.any():
                 reward_terms = env.unwrapped.reward_manager
                 terrain_scan = obs["terrain_current"][active] if "terrain_current" in obs else None
@@ -572,9 +584,17 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                               "reward_terms_per_s": {name: reward_terms._step_reward[active, i].mean().item()
                                                      for i, name in enumerate(reward_terms._term_names)},
                               "active_rate": active.float().mean().item()})
+            if not active.any():
+                break
+
+    # 평가 길이까지 살아남았지만 목표에 도달하지 못한 env도 시간초과로 분류한다.
+    timed_out |= active
+    eval_stop_step = torch.where(active & (eval_stop_step < 0), cfg.episode_steps, eval_stop_step)
 
     if args.terrain == "flat":
-        success_rule = None
+        success_rule = (f"reach {cfg.boundary_stop_forward_m:.2f} m from spawn before termination, "
+                        f"capped at tile edge minus {cfg.boundary_edge_margin_m:.2f} m; "
+                        "otherwise time_out at evaluation horizon")
     elif args.terrain == "gap":
         success_rule = (f"body forward x >= gap outer edge + {cfg.top_position_margin_m:.2f} m "
                         f"for {cfg.hold_steps} active steps before termination")
@@ -587,6 +607,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
               "initial_terrain_scan": initial_terrain_scan, "initial_scan_geometry": initial_scan_geometry,
               "command_mps": cfg.forward_command_mps, "observed_command": command_sample,
               "spawn_forward_m": cfg.spawn_forward_m, "episode_steps": cfg.episode_steps,
+              "boundary_stop_forward_m": cfg.boundary_stop_forward_m,
+              "boundary_edge_margin_m": cfg.boundary_edge_margin_m,
+              "boundary_stop_rule": "stop accounting at the earlier of spawn x + boundary distance or tile +x edge minus margin",
               "stair_count": count, "first_riser_m": first_riser, "top_edge_m": top_edge,
               "success_rule": success_rule,
               "groups": {}, "trace": trace, "foot_names": foot_names,
@@ -628,6 +651,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         report["groups"][name] = {
             "step_height_m": None if args.terrain != "stairs" else heights[sel][0].item(),
             "n": int(sel.sum().item()), "success_rate": success[sel].float().mean().item(),
+            "boundary_reached_rate": boundary_reached[sel].float().mean().item(),
             "non_timeout_rate": failed[sel].float().mean().item(),
             "timeout_rate": timed_out[sel].float().mean().item(),
             "max_body_rise_steps_mean": max_steps[sel].mean().item(),
@@ -686,8 +710,10 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         "step_height_m": None if args.terrain != "stairs" else heights[i].item(),
         "spawn_x_m": start_xy[i, 0].item(), "spawn_y_m": start_xy[i, 1].item(), "spawn_yaw_rad": start_yaw[i].item(),
         "success": bool(success[i].item()),
-        "outcome": "success" if success[i] else ("non_timeout" if failed[i] else ("time_out" if timed_out[i] else "active_at_end")),
+        "outcome": "success" if success[i] else ("non_timeout" if failed[i] else ("boundary_reached" if boundary_reached[i] else "time_out")),
         "termination_reasons": done_reasons[i], "done_step": int(done_step[i].item()),
+        "eval_stop_step": int(eval_stop_step[i].item()),
+        "boundary_stop_x_m": boundary_x[i].item(),
         "max_body_rise_steps": max_steps[i].item(), "max_forward_m": max_outward[i].item(),
         "last_x_m": last_xy[i, 0].item(), "last_y_m": last_xy[i, 1].item(), "last_yaw_rad": last_yaw[i].item(),
         "max_consecutive_reached": int(max_consecutive[i].item()),

@@ -1,5 +1,15 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-11 — 고정 지형 평가의 타일 경계 종료(C안)
+
+8 m 평가 타일의 +x 끝은 원점 기준 4 m다. 기존 flat teacher의 `base_contact` 27/256은 모두 x≥3.998 m에서, 성공 후에도 계속 시뮬레이션한 stairs의 접촉 종료는 GRU+JEPA 470/482 및 teacher 440/449에서 주로 x=4.00~4.21 m에 발생했다. 성공 판정 뒤의 접촉이 영상과 `non_timeout_rate`를 오염시켰다.
+
+공통 평가 함수에서 env별 `boundary_stop_forward_m=3.5`를 적용한다. 출발 x+3.5 m와 타일 +x 끝에서 0.5 m 앞 중 이른 위치를 정지선으로 삼는다. 따라서 기존 중심 출발에서는 x=3.5 m, Oracle 평가의 x=1.0 m 출발에서도 안전하게 x=3.5 m에서 집계를 멈춘다. 이는 시뮬레이터 종료가 아니라 평가의 `active` 마스크만 닫는 동작이다. 계단·gap은 기존 성공이 먼저 확정되면 그 스텝에서 성공으로 끝내고, 그렇지 않으면 경계 도달을 `boundary_reached`로 기록한다. Flat은 종료 전 정지선 도달을 성공으로, 20 s 안에 도달하지 못하고 살아 있으면 `time_out`으로 정의한다. `non_timeout`에는 기존 `termination_reasons`를 같이 기록하며 `eval_stop_step`과 env별 정지선도 출력한다. 종료된 env의 이후 latent·action 오차, 보상 합, 접촉 진단은 집계하지 않는다. 기존 gap 성공 기하는 유지한다.
+
+검증: Isaac 앱 내부 전체 단위 테스트 **114개 통과**. Z790 스모크에서 2-iteration GRU 체크포인트에 내장된 확정 teacher로 flat 16 env·seed 43·1000 step은 16/16 성공, `non_timeout` 0, 최종 x≤3.512 m였다. 13 cm 계단 16 env·같은 seed는 성공 0, `time_out` 16, 경계 도달 0이었다. 이 스모크는 13 cm 성능 검증이 아니라 경계 집계 동작 점검이다.
+
+기존 JSON과 같은 seed 43·7개 높이(9~15 cm)×128 env, model_3000으로 재평가했다. GRU+JEPA의 계단 성공은 **482→483/896**(높이별 128/128/115/79/32/0/0 → 128/128/114/80/33/0/0)으로 1개 차이다. Teacher 상한은 **449→449/896**(128/128/127/63/3/0/0, 높이별도 모두 동일)이다. 1~2 env 차이는 앞선 동일 seed 재실행에서도 보인 평가 변동 범위다. 기존 그룹 `non_timeout_rate`를 env 수로 환산하면 GRU+JEPA **475→1**, teacher **444→0**이며, 이전에는 성공 뒤 타일 경계에서 생긴 종료가 포함됐다. 새 평가에서는 성공 env의 `done_step`이 모두 −1이고 `eval_stop_step`에서 집계가 닫혔다. 동일 seed 비교 JSON은 `/tmp/boundary_gru_jepa_stairs_896.json`, `/tmp/boundary_teacher_stairs_896.json`에 보관했다.
+
 ## 2026-10-11 — Phase 3 student 평가: teacher latent 잡음·행동 오차·평지 경계 조사
 
 **관찰과 검증할 가설(사용자 제공, Z790 model_3000, 높이당 128 env):** 13 cm 계단 성공(/128)은 teacher 3, GRU 7~9, GRU+JEPA 31~32, GRU+copy 52~55이며 GRU+copy는 14 cm도 26~30이다. 10 cm gap은 teacher 0/256(모두 timeout 정지), GRU 2, GRU+copy 43, no-memory 123이며 GRU+copy는 gap에서 125/256 넘어졌다. 12 cm 첫 단 근처 teacher std 정규화 latent L2 오차는 GRU 1.73, GRU+JEPA 2.91, GRU+copy 3.95였다. **가설:** 정확한 지형 latent를 받은 고정 teacher head는 큰 계단·gap 앞에서 정지하고, latent 오차가 커지면 시도가 늘어난다. 성공률뿐 아니라 넘어짐도 함께 비교해야 한다.
