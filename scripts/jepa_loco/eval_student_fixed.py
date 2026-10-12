@@ -10,8 +10,9 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--policy", choices=("student", "teacher"), default="student")
-parser.add_argument("--terrain", choices=("stairs", "flat", "gap"), default="stairs")
+parser.add_argument("--terrain", choices=("stairs", "stairs_down", "flat", "gap", "rough"), default="stairs")
 parser.add_argument("--step_heights_m", type=float, nargs="+", default=None)
+parser.add_argument("--rough_max_heights_m", type=float, nargs="+", default=None)
 parser.add_argument("--envs_per_height", type=int, default=None)
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--episode_steps", type=int, default=None)
@@ -46,7 +47,7 @@ from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy
 def main() -> None:
     noise_requested = args.latent_noise_std is not None or args.latent_noise_mode is not None
     defaults = StudentFixedEvalCfg()
-    for name in ("step_heights_m", "envs_per_height", "seed", "spawn_forward_m", "viewer_env_index",
+    for name in ("step_heights_m", "rough_max_heights_m", "envs_per_height", "seed", "spawn_forward_m", "viewer_env_index",
                  "latent_noise_std", "latent_noise_mode"):
         if getattr(args, name) is None:
             setattr(args, name, getattr(defaults, name))
@@ -75,9 +76,10 @@ def main() -> None:
     args.envs_per_width = None
     args.probe_terrain = False
     args.flatten_terrain_input = False
-    heights = tuple(args.step_heights_m) if args.terrain == "stairs" else None
+    heights = tuple(args.step_heights_m) if args.terrain in ("stairs", "stairs_down") else None
+    rough_heights = tuple(args.rough_max_heights_m) if args.terrain == "rough" else None
     run_fixed_eval(
-        args, step_heights_m=heights,
+        args, step_heights_m=heights, rough_max_heights_m=rough_heights,
         policy_factory=lambda path, device: StudentInferencePolicy(
             path, device, policy_mode=args.policy, teacher_std=stats["std"],
             latent_noise_std=args.latent_noise_std, latent_noise_mode=args.latent_noise_mode,

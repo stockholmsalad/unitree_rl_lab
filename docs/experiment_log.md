@@ -1,5 +1,17 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-12 — 졸업논문 고정 평가에 내려가는 계단·비정형 지형 추가
+
+CLAUDE.md의 2026-10-12 평가 범위 결정에 따라 teacher와 student 공통 고정 평가에 `stairs_down`, `rough`를 추가했다. 학습 지형·학습 코드와 기존 `stairs`·`flat`·`gap` 평가는 바꾸지 않았다. Gap 코드는 기존 원고 수치 재현용으로 유지하며 졸업논문 평가 범위에는 넣지 않는다.
+
+**설치된 IsaacLab 소스 확인:** `trimesh/mesh_terrains.py`의 `pyramid_stairs_terrain`은 중앙 플랫폼을 `(num_steps+1)×step_height`에 놓고, 바깥쪽 마지막 단을 `step_height`에 둔다. 현재 8 m 타일·1 m border·3 m platform·0.3 m 단 폭에서는 6단이며 중앙 기준 첫 단 가장자리 x=1.2 m, 마지막 단 바깥 가장자리 x=3.0 m, 상대 하강량은 `6×step_height`다. 환경 원점은 중앙 플랫폼 상단이다. x 기하는 오르기와 같지만 내려가기 성공에는 **하강** 부호를 쓴다. `height_field/hf_terrains.py`의 `random_uniform_terrain`은 difficulty를 쓰지 않고 `noise_range` 안에서 `noise_step` 간격의 이산 높이를 뽑는다. `downsampled_scale=None`이면 `horizontal_scale`을 쓴다. 학습 rough 설정은 `noise_range=(0.01,0.06)`, `noise_step=0.01`, `border_width=0.25`, `horizontal_scale=0.1`, `vertical_scale=0.005`이다.
+
+**평가 정의:** 내려가는 계단은 원본 `MeshPyramidStairsTerrainCfg`로 9~15 cm(기본, 높이당 128 env)를 고정 생성한다. 중심 출발·0.6 m/s 직진·20 s에서 몸체 하강량이 `top_height_fraction×6×step_height` 이상이고 x가 마지막 단 바깥 가장자리에서 `top_position_margin_m` 이내인 상태를 25스텝 연속 유지하면 성공이다. 비시간초과 종료는 `fall_termination`, 첫 단 전 시간초과는 `top_stall`, 나머지는 `other`다. 비정형은 원본 `HfRandomUniformTerrainCfg`의 `noise_range=(0.01,h)`로 h=0.04/0.06/0.08 m(기본, 단계당 128 env)를 평가한다. 0.08 m는 학습 범위 밖 참고 단계다. 정지선 3.5 m 안의 전진 3.0 m를 25스텝 유지하고 비시간초과 종료가 없으면 성공이다. 종료율·최대 전진·settle 이후 몸통 좌표 xy 속도 추종 L2를 단계별로 기록한다. 두 모드 모두 기존 seed 43·경계 집계 정지 규칙을 사용한다.
+
+**생성 검사:** `--audit_terrain_only`와 실제 평가 시작 모두에서 내려가는 계단은 USD 수직 ray로 중앙 플랫폼과 마지막 단의 z 및 `6×step_height` 차이를 확인한다. 비정형은 모든 열이 원본 `random_uniform_terrain`인지와 실제 USD 메시 내부 z 범위가 해당 `noise_range` 안인지 확인한다. 평지로 잘못 생성된 타일은 평가 전에 오류로 중단한다.
+
+**검증:** Isaac 앱 내부 전체 테스트 119개 통과. Z790 지형 감사에서 내려가는 계단 9/13 cm의 4/4 열이 통과했고, 중앙/마지막 단 z는 각각 (0.63,0.09), (0.91,0.13) m였다. 비정형 4/6/8 cm의 3/3 열이 통과했고 실제 메시 내부 최고 높이가 각 설정값과 일치했다. Teacher 짧은 재생(내려가기 4 env×80 step, 비정형 3 env×80 step), student 짧은 재생(내려가기 2 env×40 step, 비정형 3 env×40 step), student 평가의 teacher 정책·episode latent noise(비정형 2 env×60 step)가 정상 JSON을 생성했다. 짧은 재생은 성공률 검증으로 해석하지 않는다. Teacher와 student 4종 본 평가는 **실행하지 않았다**.
+
 ## 2026-10-11 — 고정 지형 평가의 타일 경계 종료(C안)
 
 8 m 평가 타일의 +x 끝은 원점 기준 4 m다. 기존 flat teacher의 `base_contact` 27/256은 모두 x≥3.998 m에서, 성공 후에도 계속 시뮬레이션한 stairs의 접촉 종료는 GRU+JEPA 470/482 및 teacher 440/449에서 주로 x=4.00~4.21 m에 발생했다. 성공 판정 뒤의 접촉이 영상과 `non_timeout_rate`를 오염시켰다.

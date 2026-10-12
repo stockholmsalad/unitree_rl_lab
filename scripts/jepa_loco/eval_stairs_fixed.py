@@ -21,7 +21,9 @@ if __name__ == "__main__":
     ), required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--terrain", choices=("stairs", "flat", "gap"), default="stairs")
+    parser.add_argument("--terrain", choices=("stairs", "stairs_down", "flat", "gap", "rough"), default="stairs")
+    parser.add_argument("--step_heights_m", type=float, nargs="+", default=None)
+    parser.add_argument("--rough_max_heights_m", type=float, nargs="+", default=None)
     parser.add_argument("--spawn_forward_m", type=float, default=None)
     parser.add_argument("--episode_steps", type=int, default=None)
     parser.add_argument("--boundary_stop_forward_m", type=float, default=None)
@@ -59,12 +61,17 @@ import unitree_rl_lab.tasks  # noqa: E402, F401
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg  # noqa: E402
 from isaaclab_tasks.utils import load_cfg_from_registry  # noqa: E402
 from unitree_rl_lab.jepa_loco.eval.stairs import (  # noqa: E402
-    StairEvalCfg, boundary_stop_x, evaluation_stop_step, fixed_height_stair_cfg, stair_geometry, stair_progress,
-    unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
+    StairEvalCfg, boundary_stop_x, down_stair_failure_reason, down_stair_geometry, down_stair_progress,
+    evaluation_stop_step, fixed_height_down_stair_cfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
+    unmet_success_conditions, update_swing_foot_peak, validate_down_stair_origins,
+    validate_down_stair_ray_heights, validate_stair_origins,
 )
 from unitree_rl_lab.jepa_loco.eval.gap import (  # noqa: E402
     fixed_width_gap_cfg, gap_failure_reason, gap_geometry, gap_success_step,
     validate_gap_origins, validate_gap_tiles,
+)
+from unitree_rl_lab.jepa_loco.eval.rough import (  # noqa: E402
+    fixed_rough_cfg, rough_success_step, rough_velocity_tracking_error, validate_rough_mesh_bounds,
 )
 from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy  # noqa: E402
 from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import OracleCurrentPPORunnerCfg  # noqa: E402
@@ -84,6 +91,73 @@ def imported_terrain_mesh(terrain) -> trimesh.Trimesh:
     vertices = np.asarray(usd_mesh.GetPointsAttr().Get(), dtype=np.float64)
     faces = np.asarray(usd_mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64).reshape(-1, 3)
     return trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+
+def check_down_stair_environment(env, cfg: StairEvalCfg, heights: torch.Tensor,
+                                 stair_count: int, outer_edge: float, step_width: float) -> list[dict]:
+    """모든 생성 타일의 중앙 꼭대기와 바깥 마지막 단을 실제 USD 수직 ray로 검사."""
+    terrain = env.unwrapped.scene.terrain
+    origins = terrain.env_origins.detach().cpu().numpy()
+    rays = np.repeat(origins, 2, axis=0).astype(np.float64)
+    rays[0::2, 0] += 0.0
+    rays[1::2, 0] += outer_edge - step_width / 2
+    rays[:, 2] += cfg.down_stair_ray_height_m
+    directions = np.tile(np.array([[0.0, 0.0, -1.0]]), (len(rays), 1))
+    locations, ray_ids, _ = imported_terrain_mesh(terrain).ray.intersects_location(
+        rays, directions, multiple_hits=False,
+    )
+    hit_z = np.full(len(rays), np.nan)
+    hit_z[ray_ids] = locations[:, 2]
+    center = torch.as_tensor(hit_z[0::2], device=heights.device, dtype=heights.dtype)
+    last_step = torch.as_tensor(hit_z[1::2], device=heights.device, dtype=heights.dtype)
+    validate_down_stair_origins(terrain.env_origins[:, 2], heights, stair_count, cfg.terrain_height_tolerance_m)
+    if not torch.allclose(center, terrain.env_origins[:, 2], atol=cfg.terrain_height_tolerance_m, rtol=0):
+        raise ValueError("내려가는 계단의 중앙 플랫폼 USD ray 높이가 origin과 다르다")
+    validate_down_stair_ray_heights(center, last_step, heights, stair_count, cfg.terrain_height_tolerance_m)
+    return [{"env_id": i, "center_z_m": float(center[i]), "last_step_z_m": float(last_step[i]),
+             "drop_m": float(center[i] - last_step[i])} for i in range(len(heights))]
+
+
+def check_rough_environment(env, cfg: StairEvalCfg, max_heights: torch.Tensor) -> list[dict]:
+    """원본 random_uniform 함수와 실제 USD 높이 필드의 타일별 범위를 검사."""
+    terrain = env.unwrapped.scene.terrain
+    generator = env.unwrapped.cfg.scene.terrain.terrain_generator
+    if any(term.function.__name__ != "random_uniform_terrain" for term in generator.sub_terrains.values()):
+        raise ValueError("rough 평가에 원본 random_uniform_terrain이 아닌 함수가 있다")
+    columns = torch.arange(env.unwrapped.num_envs, device=terrain.terrain_types.device)
+    if not torch.equal(terrain.terrain_types, columns):
+        raise ValueError("rough 평가 env와 타일 열 대응이 다르다")
+    origins = terrain.env_origins.detach().cpu().numpy()
+    vertices = imported_terrain_mesh(terrain).vertices
+    axis = 1 if abs(origins[-1, 1] - origins[0, 1]) > abs(origins[-1, 0] - origins[0, 0]) else 0
+    other = 1 - axis
+    centers = origins[:, axis]
+    if len(centers) > 1 and not np.all(np.diff(centers) > 0):
+        raise ValueError("rough 타일 열 원점 순서가 증가하지 않는다")
+    limits = (centers[:-1] + centers[1:]) / 2
+    tile_ids = np.searchsorted(limits, vertices[:, axis])
+    rough_cfg = next(iter(generator.sub_terrains.values()))
+    margin = rough_cfg.border_width + generator.horizontal_scale
+    inside = ((np.abs(vertices[:, axis] - centers[tile_ids]) < generator.size[axis] / 2 - margin)
+              & (np.abs(vertices[:, other] - origins[tile_ids, other]) < generator.size[other] / 2 - margin))
+    z_min = np.full(len(origins), np.nan)
+    z_max = np.full(len(origins), np.nan)
+    ids_inside = tile_ids[inside]
+    z_inside = vertices[inside, 2]
+    order = np.argsort(ids_inside, kind="stable")
+    ids_inside = ids_inside[order]
+    z_inside = z_inside[order]
+    offsets = np.searchsorted(ids_inside, np.arange(len(origins) + 1))
+    for i in range(len(origins)):
+        values = z_inside[offsets[i]:offsets[i + 1]]
+        if len(values):
+            z_min[i], z_max[i] = values.min(), values.max()
+    low = torch.as_tensor(z_min, device=max_heights.device, dtype=max_heights.dtype)
+    high = torch.as_tensor(z_max, device=max_heights.device, dtype=max_heights.dtype)
+    validate_rough_mesh_bounds(low, high, rough_cfg.noise_range[0], max_heights,
+                               cfg.terrain_height_tolerance_m)
+    return [{"env_id": i, "mesh_z_min_m": float(low[i]), "mesh_z_max_m": float(high[i]),
+             "noise_range_m": [rough_cfg.noise_range[0], float(max_heights[i])]} for i in range(len(origins))]
 
 
 def check_gap_environment(env, cfg: StairEvalCfg, widths: torch.Tensor) -> list[dict]:
@@ -106,8 +180,10 @@ def check_gap_environment(env, cfg: StairEvalCfg, widths: torch.Tensor) -> list[
 
 
 def make_eval_env_cfg(task: str, cfg: StairEvalCfg, terrain_mode: str, device: str,
-                      step_heights_m: tuple[float, ...] | None = None):
-    n_groups = len(step_heights_m) if terrain_mode == "stairs" and step_heights_m else 2
+                      step_heights_m: tuple[float, ...] | None = None,
+                      rough_max_heights_m: tuple[float, ...] | None = None):
+    n_groups = (len(step_heights_m) if terrain_mode in ("stairs", "stairs_down") and step_heights_m
+                else len(rough_max_heights_m) if terrain_mode == "rough" and rough_max_heights_m else 2)
     env_cfg = parse_env_cfg(task, device=device, num_envs=n_groups * cfg.envs_per_height,
                             entry_point_key="play_env_cfg_entry_point")
     env_cfg.seed = cfg.seed
@@ -131,18 +207,31 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg, terrain_mode: str, device: s
             "gap_low": fixed_width_gap_cfg(gap, cfg.low_gap_width_m, 0.5),
             "gap_high": fixed_width_gap_cfg(gap, cfg.high_gap_width_m, 0.5),
         }
-    else:
-        stair = generator.sub_terrains["stairs_up"]
+    elif terrain_mode in ("stairs", "stairs_down"):
+        stair = generator.sub_terrains["stairs_up" if terrain_mode == "stairs" else "stairs_down"]
+        factory = fixed_height_stair_cfg if terrain_mode == "stairs" else fixed_height_down_stair_cfg
+        prefix = "stairs_up" if terrain_mode == "stairs" else "stairs_down"
         if step_heights_m:
             generator.sub_terrains = {
-                f"stairs_up_{i:02d}": fixed_height_stair_cfg(stair, height, 1.0 / n_groups)
+                f"{prefix}_{i:02d}": factory(stair, height, 1.0 / n_groups)
                 for i, height in enumerate(step_heights_m)
             }
         else:
             generator.sub_terrains = {
-                "stairs_up_low": fixed_height_stair_cfg(stair, cfg.low_step_height_m, 0.5),
-                "stairs_up_high": fixed_height_stair_cfg(stair, cfg.high_step_height_m, 0.5),
+                f"{prefix}_low": factory(stair, cfg.low_step_height_m, 0.5),
+                f"{prefix}_high": factory(stair, cfg.high_step_height_m, 0.5),
             }
+    elif terrain_mode == "rough":
+        rough = generator.sub_terrains["rough"]
+        if not np.isclose(rough.noise_range[1], cfg.rough_training_max_height_m):
+            raise ValueError("평가의 학습 rough 상한 기록이 실제 학습 cfg와 다르다")
+        max_heights = rough_max_heights_m or cfg.rough_max_heights_m
+        generator.sub_terrains = {
+            f"rough_{i:02d}": fixed_rough_cfg(rough, height, 1.0 / n_groups)
+            for i, height in enumerate(max_heights)
+        }
+    else:
+        raise ValueError(f"지원하지 않는 평가 지형: {terrain_mode}")
     env_cfg.scene.terrain.terrain_generator = generator
     env_cfg.scene.terrain.max_init_terrain_level = 0
 
@@ -163,12 +252,23 @@ def make_eval_env_cfg(task: str, cfg: StairEvalCfg, terrain_mode: str, device: s
 
 
 def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
+         rough_max_heights_m: tuple[float, ...] | None = None,
          policy_factory=None, latent_stats=None):
     if args is None:
         args = globals()["args"]
+    if step_heights_m is None and getattr(args, "step_heights_m", None) is not None:
+        step_heights_m = tuple(args.step_heights_m)
     cfg = StairEvalCfg()
+    if rough_max_heights_m is None and getattr(args, "rough_max_heights_m", None) is not None:
+        rough_max_heights_m = tuple(args.rough_max_heights_m)
+    if args.terrain == "rough" and rough_max_heights_m is None:
+        rough_max_heights_m = cfg.rough_max_heights_m
+    if args.terrain == "stairs_down" and step_heights_m is None:
+        step_heights_m = cfg.down_step_heights_m
     if args.spawn_forward_m is not None:
         cfg.spawn_forward_m = args.spawn_forward_m
+    elif args.terrain in ("stairs_down", "rough"):
+        cfg.spawn_forward_m = cfg.center_spawn_forward_m
     if getattr(args, "viewer_env_index", None) is not None:
         cfg.viewer_env_index = args.viewer_env_index
     if args.episode_steps is not None:
@@ -201,10 +301,18 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                                       any(h <= 0 for h in step_heights_m) or
                                       tuple(sorted(set(step_heights_m))) != tuple(step_heights_m)):
         raise ValueError("계단 높이 목록은 양수이고 중복 없이 오름차순이어야 한다")
-    group_count = len(step_heights_m) if args.terrain == "stairs" and step_heights_m else 2
+    if rough_max_heights_m is not None and (len(rough_max_heights_m) < 1 or
+                                            any(h <= 0 for h in rough_max_heights_m) or
+                                            tuple(sorted(set(rough_max_heights_m))) != rough_max_heights_m):
+        raise ValueError("rough 높이 상한 목록은 양수이고 중복 없이 오름차순이어야 한다")
+    if args.terrain == "rough" and cfg.rough_success_forward_m >= cfg.boundary_stop_forward_m:
+        raise ValueError("rough 성공 거리는 경계 정지 거리보다 작아야 한다")
+    group_count = (len(step_heights_m) if args.terrain in ("stairs", "stairs_down") and step_heights_m
+                   else len(rough_max_heights_m) if args.terrain == "rough" else 2)
     if not 0 <= cfg.viewer_env_index < group_count * cfg.envs_per_height:
         raise ValueError("viewer_env_index가 평가 env 범위를 벗어났다")
-    env_cfg = make_eval_env_cfg(args.task, cfg, args.terrain, args.device, step_heights_m)
+    env_cfg = make_eval_env_cfg(args.task, cfg, args.terrain, args.device,
+                                step_heights_m, rough_max_heights_m)
     student_task = args.task == "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     if student_task:
         agent_cfg = OracleCurrentPPORunnerCfg()
@@ -217,12 +325,53 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array" if args.video else None)
     gap_widths = None
     gap_tile_checks = None
+    down_tile_checks = None
+    rough_tile_checks = None
     if args.terrain == "gap":
         terrain = env.unwrapped.scene.terrain
         gap_widths = torch.where(terrain.terrain_types < cfg.envs_per_height,
                                  cfg.low_gap_width_m, cfg.high_gap_width_m)
         gap_tile_checks = check_gap_environment(env, cfg, gap_widths)
+    if args.terrain == "stairs_down":
+        terrain = env.unwrapped.scene.terrain
+        generator_cfg = env_cfg.scene.terrain.terrain_generator
+        stair_cfg = next(iter(generator_cfg.sub_terrains.values()))
+        count, _, outer_edge = down_stair_geometry(generator_cfg.size, stair_cfg.border_width,
+                                                   stair_cfg.platform_width, stair_cfg.step_width)
+        height_values = step_heights_m or (cfg.low_step_height_m, cfg.high_step_height_m)
+        down_heights = torch.as_tensor(height_values, device=terrain.terrain_types.device)[
+            terrain.terrain_types // cfg.envs_per_height]
+        down_tile_checks = check_down_stair_environment(
+            env, cfg, down_heights, count, outer_edge, stair_cfg.step_width,
+        )
+    if args.terrain == "rough":
+        terrain = env.unwrapped.scene.terrain
+        rough_heights = torch.as_tensor(rough_max_heights_m, device=terrain.terrain_types.device)[
+            terrain.terrain_types // cfg.envs_per_height]
+        rough_tile_checks = check_rough_environment(env, cfg, rough_heights)
     if args.audit_terrain_only:
+        if args.terrain == "rough":
+            audit = {"task": args.task, "seed": cfg.seed, "terrain": "rough",
+                     "configured_functions": {name: term.function.__name__
+                                              for name, term in env_cfg.scene.terrain.terrain_generator.sub_terrains.items()},
+                     "rough_max_heights_m": rough_max_heights_m, "tiles": rough_tile_checks}
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(audit, indent=2))
+            print(f"ROUGH_AUDIT_OK tiles={len(rough_tile_checks)} output={output}", flush=True)
+            env.close()
+            return
+        if args.terrain == "stairs_down":
+            audit = {"task": args.task, "seed": cfg.seed, "terrain": "stairs_down",
+                     "configured_functions": {name: term.function.__name__
+                                              for name, term in generator_cfg.sub_terrains.items()},
+                     "stair_count": count, "tiles": down_tile_checks}
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(audit, indent=2))
+            print(f"DOWN_STAIR_AUDIT_OK tiles={len(down_tile_checks)} output={output}", flush=True)
+            env.close()
+            return
         if args.terrain == "gap":
             generator_cfg = env_cfg.scene.terrain.terrain_generator
             audit = {"task": args.task, "seed": cfg.seed, "num_rows": generator_cfg.num_rows,
@@ -329,17 +478,21 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     start_yaw = math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2].clone()
     command_sample = env.unwrapped.command_manager.get_command("base_velocity")[0].detach().cpu().tolist()
 
-    if args.terrain == "stairs":
+    if args.terrain in ("stairs", "stairs_down"):
         stair_cfg = next(iter(env_cfg.scene.terrain.terrain_generator.sub_terrains.values()))
-        count, first_riser, top_edge = stair_geometry(env_cfg.scene.terrain.terrain_generator.size,
-                                         stair_cfg.border_width, stair_cfg.platform_width, stair_cfg.step_width)
+        geometry = stair_geometry if args.terrain == "stairs" else down_stair_geometry
+        count, first_riser, top_edge = geometry(env_cfg.scene.terrain.terrain_generator.size,
+                                                stair_cfg.border_width, stair_cfg.platform_width, stair_cfg.step_width)
     else:
         count, first_riser, top_edge = 0, None, 0.0
-    height_values = step_heights_m or (cfg.low_step_height_m, cfg.high_step_height_m)
+    height_values = (rough_max_heights_m if args.terrain == "rough" else step_heights_m
+                     or (cfg.low_step_height_m, cfg.high_step_height_m))
     heights = torch.as_tensor(height_values, device=env.unwrapped.device)[
         terrain.terrain_types // cfg.envs_per_height]
     if args.terrain == "stairs":
         validate_stair_origins(origin[:, 2], heights, count, cfg.terrain_height_tolerance_m)
+    elif args.terrain == "stairs_down":
+        validate_down_stair_origins(origin[:, 2], heights, count, cfg.terrain_height_tolerance_m)
     gap_inner_edge = None
     gap_outer_edges = None
     if args.terrain == "gap":
@@ -376,8 +529,10 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     peak_front_foot_z_settled = torch.full_like(max_steps, -float("inf"))
     reward_terms = env.unwrapped.reward_manager
     reward_term_sums = torch.zeros((env.num_envs, len(reward_terms._term_names)), device=env.unwrapped.device)
+    velocity_error_sums = torch.zeros_like(max_steps)
+    velocity_error_counts = torch.zeros_like(max_steps)
     contact_diagnostics = {"near_step_terminations": [], "first_contact_traces": []}
-    if args.contact_diagnostics and args.terrain == "stairs":
+    if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down"):
         contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
         contact_ids, contact_names = contact_sensor.find_bodies(".*")
         front_contact_ids = [idx for idx, name in zip(contact_ids, contact_names) if name.startswith("F") and name.endswith("_foot")]
@@ -399,7 +554,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         terminal_yaw[ids] = math_utils.euler_xyz_from_quat(robot.data.root_quat_w[ids])[2]
         if args.terrain == "gap":
             terminal_z[ids] = robot.data.root_pos_w[ids, 2]
-        if args.contact_diagnostics and args.terrain == "stairs":
+        if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down"):
             root_x = robot.data.root_pos_w[ids, 0] - origin[ids, 0]
             for env_id, distance in zip(ids.tolist(), root_x.tolist()):
                 if not active[env_id] or abs(distance - first_riser) > cfg.contact_probe_margin_m:
@@ -434,7 +589,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             action_error_counts = torch.zeros_like(latent_counts)
 
     for step in range(cfg.episode_steps):
-        if args.contact_diagnostics and args.terrain == "stairs":
+        if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down"):
             step_index[0] = step + 1
         with torch.inference_mode():
             action_obs = obs
@@ -454,7 +609,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                     action_error = torch.linalg.vector_norm(actions - teacher_actions, dim=-1)
                 relative_x = robot.data.root_pos_w[:, 0] - origin[:, 0]
                 near = ((relative_x - first_riser).abs() <= cfg.contact_probe_margin_m
-                        if args.terrain == "stairs" else torch.zeros_like(active))
+                        if args.terrain in ("stairs", "stairs_down") else torch.zeros_like(active))
                 for bucket, selected in enumerate((near, ~near)):
                     selected = active & selected
                     latent_sums[:, bucket] += torch.where(selected, latent_error, 0.0)
@@ -477,15 +632,20 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                                         if term_manager_all.get_term(name)[env_id].item()]
             timed_out |= just_done & time_outs
             still_active = active & ~dones.bool()
-            if args.terrain == "gap":
+            if args.terrain in ("gap", "rough"):
                 reached = torch.zeros_like(active)
                 progress = torch.zeros_like(max_steps)
+            elif args.terrain == "stairs_down":
+                reached, progress = down_stair_progress(
+                    robot.data.root_pos_w, origin, start_z, heights, count,
+                    top_edge, cfg.top_height_fraction, cfg.top_position_margin_m,
+                )
             else:
                 reached, progress = stair_progress(robot.data.root_pos_w, origin, start_z, heights, count,
                                                     top_edge, cfg.top_height_fraction, cfg.top_position_margin_m)
             max_steps = torch.where(still_active, torch.maximum(max_steps, progress), max_steps)
             forward = robot.data.root_pos_w[:, 0] - origin[:, 0]
-            if args.terrain == "stairs":
+            if args.terrain in ("stairs", "stairs_down"):
                 height_ok_ever |= still_active & (progress >= cfg.top_height_fraction * count)
                 position_ok_ever |= still_active & (forward >= top_edge - cfg.top_position_margin_m)
                 reached_top_ever |= still_active & reached
@@ -493,6 +653,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                 position_ok_ever |= still_active & (forward >= gap_outer_edges + cfg.top_position_margin_m)
                 min_body_z = torch.where(still_active, torch.minimum(min_body_z, robot.data.root_pos_w[:, 2]), min_body_z)
                 min_body_z = torch.where(just_done, torch.minimum(min_body_z, terminal_z), min_body_z)
+            elif args.terrain == "rough":
+                position_ok_ever |= still_active & (forward - start_xy[:, 0] >= cfg.rough_success_forward_m)
             # done env는 _reset_idx 직전 캡처한 종료 위치를 사용한다.
             last_xy = torch.where(still_active[:, None], robot.data.root_pos_w[:, :2] - origin[:, :2], last_xy)
             last_yaw = torch.where(still_active, math_utils.euler_xyz_from_quat(robot.data.root_quat_w)[2], last_yaw)
@@ -505,7 +667,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             front_x = (robot.data.body_pos_w[:, front_foot_ids, 0] - origin[:, None, 0]).amax(dim=1)
             peak_front_foot_z = torch.where(still_active, torch.maximum(peak_front_foot_z, front_z), peak_front_foot_z)
             peak_front_foot_x = torch.where(still_active, torch.maximum(peak_front_foot_x, front_x), peak_front_foot_x)
-            if args.contact_diagnostics and args.terrain == "stairs":
+            if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down"):
                 front_foot_z = robot.data.body_pos_w[:, front_foot_ids, 2] - origin[:, None, 2]
                 front_forces = contact_sensor.data.net_forces_w[:, front_contact_ids]
                 front_air_time = contact_sensor.data.current_air_time[:, front_contact_ids]
@@ -540,15 +702,25 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                 contact_trace_remaining = torch.where(still_active, (contact_trace_remaining - 1).clamp(min=0), 0)
             if step >= cfg.settle_steps:
                 peak_front_foot_z_settled = torch.where(still_active, torch.maximum(peak_front_foot_z_settled, front_z), peak_front_foot_z_settled)
+                if args.terrain == "rough":
+                    command_xy = env.unwrapped.command_manager.get_command("base_velocity")[:, :2]
+                    velocity_error = rough_velocity_tracking_error(robot.data.root_lin_vel_b[:, :2], command_xy)
+                    velocity_error_sums += torch.where(still_active, velocity_error, 0.0)
+                    velocity_error_counts += still_active.float()
             min_body_drop = torch.where(still_active, torch.minimum(min_body_drop, progress), min_body_drop)
             if args.terrain == "gap":
                 consecutive, candidate_success = gap_success_step(
                     forward, gap_outer_edges, still_active, consecutive, success,
                     cfg.top_position_margin_m, cfg.hold_steps,
                 )
+            elif args.terrain == "rough":
+                consecutive, candidate_success = rough_success_step(
+                    forward - start_xy[:, 0], still_active, consecutive,
+                    cfg.rough_success_forward_m, cfg.hold_steps,
+                )
             else:
                 consecutive = torch.where(still_active & reached, consecutive + 1, torch.zeros_like(consecutive))
-                candidate_success = consecutive >= cfg.hold_steps if args.terrain == "stairs" else torch.zeros_like(active)
+                candidate_success = consecutive >= cfg.hold_steps if args.terrain in ("stairs", "stairs_down") else torch.zeros_like(active)
             max_consecutive = torch.maximum(max_consecutive, consecutive)
             new_success, new_boundary, active = evaluation_stop_step(
                 still_active, candidate_success, forward >= boundary_x, args.terrain == "flat",
@@ -598,6 +770,13 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     elif args.terrain == "gap":
         success_rule = (f"body forward x >= gap outer edge + {cfg.top_position_margin_m:.2f} m "
                         f"for {cfg.hold_steps} active steps before termination")
+    elif args.terrain == "stairs_down":
+        success_rule = (f"body drop >= {cfg.top_height_fraction} * {count} * step height "
+                        f"and forward x >= {top_edge-cfg.top_position_margin_m:.2f} m "
+                        f"for {cfg.hold_steps} steps")
+    elif args.terrain == "rough":
+        success_rule = (f"forward from spawn >= {cfg.rough_success_forward_m:.2f} m "
+                        f"for {cfg.hold_steps} active steps before termination or boundary stop")
     else:
         success_rule = (f"body gain >= {cfg.top_height_fraction} * {count} * step height "
                         f"and forward x >= {top_edge-cfg.top_position_margin_m:.2f} m "
@@ -635,11 +814,21 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         report["gap_outer_edge_m"] = {"low": gap_inner_edge + cfg.low_gap_width_m,
                                       "high": gap_inner_edge + cfg.high_gap_width_m}
         report["gap_tile_checks"] = gap_tile_checks
+    if args.terrain == "stairs_down":
+        report["down_stair_tile_checks"] = down_tile_checks
+    if args.terrain == "rough":
+        report["rough_max_heights_m"] = list(rough_max_heights_m)
+        report["rough_training_max_height_m"] = cfg.rough_training_max_height_m
+        report["rough_success_forward_m"] = cfg.rough_success_forward_m
+        report["rough_tile_checks"] = rough_tile_checks
     if args.terrain == "flat":
         selections = (("flat", torch.ones_like(active)),)
     elif args.terrain == "gap":
         selections = (("low", gap_widths == cfg.low_gap_width_m),
                       ("high", gap_widths == cfg.high_gap_width_m))
+    elif args.terrain == "rough":
+        selections = tuple((f"rough_{height:.2f}", terrain.terrain_types // cfg.envs_per_height == i)
+                           for i, height in enumerate(rough_max_heights_m))
     else:
         if step_heights_m is None:
             selections = (("low", terrain.terrain_types < cfg.envs_per_height),
@@ -649,7 +838,7 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                                for i, height in enumerate(step_heights_m))
     for name, sel in selections:
         report["groups"][name] = {
-            "step_height_m": None if args.terrain != "stairs" else heights[sel][0].item(),
+            "step_height_m": None if args.terrain not in ("stairs", "stairs_down") else heights[sel][0].item(),
             "n": int(sel.sum().item()), "success_rate": success[sel].float().mean().item(),
             "boundary_reached_rate": boundary_reached[sel].float().mean().item(),
             "non_timeout_rate": failed[sel].float().mean().item(),
@@ -672,7 +861,18 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
         if args.terrain == "gap":
             report["groups"][name]["gap_width_m"] = cfg.low_gap_width_m if name == "low" else cfg.high_gap_width_m
             report["groups"][name]["max_body_drop_m_mean"] = (start_z[sel] - min_body_z[sel]).clamp(min=0).mean().item()
-        if args.contact_diagnostics and args.terrain == "stairs":
+        if args.terrain == "stairs_down":
+            report["groups"][name]["max_body_descent_steps_mean"] = max_steps[sel].mean().item()
+            report["groups"][name]["fall_termination_rate"] = failed[sel].float().mean().item()
+        if args.terrain == "rough":
+            max_height = float(name.removeprefix("rough_"))
+            report["groups"][name]["rough_max_height_m"] = max_height
+            report["groups"][name]["outside_training_height_range"] = max_height > cfg.rough_training_max_height_m
+            report["groups"][name]["fall_rate"] = failed[sel].float().mean().item()
+            sample_count = velocity_error_counts[sel].sum()
+            report["groups"][name]["body_xy_velocity_error_l2_mps"] = (
+                (velocity_error_sums[sel].sum() / sample_count).item() if sample_count > 0 else None)
+        if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down"):
             finite = sel & torch.isfinite(peak_swing_front_foot_z)
             report["groups"][name]["peak_swing_front_foot_z_near_step_m_mean"] = (
                 peak_swing_front_foot_z[finite].mean().item() if finite.any() else None)
@@ -697,7 +897,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             return []
         if args.terrain == "gap":
             return ["hold_steps"] if position_ok_ever[env_id] else ["forward_x"]
-        if args.terrain != "stairs":
+        if args.terrain == "rough":
+            return ["hold_steps"] if position_ok_ever[env_id] else ["forward_x"]
+        if args.terrain not in ("stairs", "stairs_down"):
             return []
         return unmet_success_conditions(
             False, bool(height_ok_ever[env_id]), bool(position_ok_ever[env_id]),
@@ -707,20 +909,32 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
     report["per_env"] = [{
         "env_id": i,
         "terrain_type": int(terrain.terrain_types[i].item()),
-        "step_height_m": None if args.terrain != "stairs" else heights[i].item(),
+        "step_height_m": None if args.terrain not in ("stairs", "stairs_down") else heights[i].item(),
         "spawn_x_m": start_xy[i, 0].item(), "spawn_y_m": start_xy[i, 1].item(), "spawn_yaw_rad": start_yaw[i].item(),
         "success": bool(success[i].item()),
         "outcome": "success" if success[i] else ("non_timeout" if failed[i] else ("boundary_reached" if boundary_reached[i] else "time_out")),
         "termination_reasons": done_reasons[i], "done_step": int(done_step[i].item()),
         "eval_stop_step": int(eval_stop_step[i].item()),
         "boundary_stop_x_m": boundary_x[i].item(),
-        "max_body_rise_steps": max_steps[i].item(), "max_forward_m": max_outward[i].item(),
+        "max_body_rise_steps": max_steps[i].item() if args.terrain != "stairs_down" else None,
+        "max_forward_m": max_outward[i].item(),
+        **({"max_body_descent_steps": max_steps[i].item(),
+            "descended_stair_count": min(count, max(0, int(max_steps[i].item()))),
+            "failure_reason": down_stair_failure_reason(
+                bool(success[i]), bool(failed[i]), bool(timed_out[i]), max_outward[i].item(), first_riser,
+            )} if args.terrain == "stairs_down" else {}),
+        **({"rough_max_height_m": heights[i].item(),
+            "outside_training_height_range": bool(heights[i] > cfg.rough_training_max_height_m),
+            "body_xy_velocity_error_l2_mps": (velocity_error_sums[i] / velocity_error_counts[i]).item()
+            if velocity_error_counts[i] > 0 else None,
+            "body_xy_velocity_error_samples": int(velocity_error_counts[i].item())}
+           if args.terrain == "rough" else {}),
         "last_x_m": last_xy[i, 0].item(), "last_y_m": last_xy[i, 1].item(), "last_yaw_rad": last_yaw[i].item(),
         "max_consecutive_reached": int(max_consecutive[i].item()),
         "unmet_success_conditions": _unmet(i),
         **({"peak_swing_front_foot_z_near_step_m":
             peak_swing_front_foot_z[i].item() if torch.isfinite(peak_swing_front_foot_z[i]) else None}
-           if args.contact_diagnostics and args.terrain == "stairs" else {}),
+           if args.contact_diagnostics and args.terrain in ("stairs", "stairs_down") else {}),
         **({"latent_error_near_first_step_mean":
             (latent_sums[i, 0] / latent_counts[i, 0]).item() if latent_counts[i, 0] > 0 else None,
             "latent_error_elsewhere_mean":
