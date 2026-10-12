@@ -4,11 +4,13 @@ import pytest
 import torch
 
 from unitree_rl_lab.jepa_loco.eval.stairs import (
-    StairEvalCfg, StudentFixedEvalCfg, boundary_stop_x, evaluation_stop_step,
-    fixed_height_stair_cfg, stair_geometry, stair_progress,
+    StairEvalCfg, StudentFixedEvalCfg, boundary_stop_x, down_stair_failure_reason,
+    down_stair_geometry, down_stair_progress, evaluation_stop_step,
+    fixed_height_down_stair_cfg, fixed_height_stair_cfg, stair_geometry, stair_progress,
     unmet_success_conditions, update_swing_foot_peak, validate_stair_origins,
+    validate_down_stair_origins, validate_down_stair_ray_heights,
 )
-from unitree_rl_lab.jepa_loco.envs.easy_start_terrain import EasyUpCfg
+from unitree_rl_lab.jepa_loco.envs.easy_start_terrain import EasyDownCfg, EasyUpCfg
 
 
 def test_stair_geometry_matches_generator():
@@ -98,3 +100,35 @@ def test_evaluation_stop_success_boundary_and_inactive_masks():
     assert flat_success.tolist() == [True, True, True, False, False]
     assert not flat_stopped.any()
     assert flat_active.tolist() == [False, False, False, True, False]
+
+
+def test_down_stair_geometry_progress_and_failure():
+    count, first, outer = down_stair_geometry((8.0, 8.0), 1.0, 3.0, 0.3)
+    assert (count, first, outer) == pytest.approx((6, 1.2, 3.0))
+    root = torch.tensor([[2.95, 0, 0.2], [2.8, 0, 0.2], [2.95, 0, 0.6]])
+    origin = torch.zeros_like(root)
+    reached, descent = down_stair_progress(root, origin, torch.tensor([0.8, 0.8, 0.8]),
+                                           torch.full((3,), 0.1), count, outer, 0.9, 0.1)
+    assert reached.tolist() == [True, False, False]
+    assert descent.tolist() == pytest.approx([6, 6, 2])
+    assert down_stair_failure_reason(False, True, False, 1.0, first) == "fall_termination"
+    assert down_stair_failure_reason(False, False, True, 1.0, first) == "top_stall"
+    assert down_stair_failure_reason(False, False, True, 1.5, first) == "other"
+
+
+def test_down_stair_uses_original_generator_and_checks_height():
+    template = EasyDownCfg(proportion=0.25, step_height_range=(0.05, 0.2), step_width=0.3,
+                           platform_width=3.0, border_width=1.0, num_rows=10, warmup_rows=2)
+    fixed = fixed_height_down_stair_cfg(template, 0.09, 1.0)
+    assert fixed.function is not template.function
+    assert fixed.function.__name__ == "pyramid_stairs_terrain"
+    assert fixed.step_height_range == (0.09, 0.09)
+    fixed.size = (8.0, 8.0)
+    _, origin = fixed.function(0.8, fixed)
+    assert origin[2] == pytest.approx(7 * 0.09)
+    validate_down_stair_origins(torch.tensor([0.63]), torch.tensor([0.09]), 6, 1e-4)
+    validate_down_stair_ray_heights(torch.tensor([0.63]), torch.tensor([0.09]),
+                                    torch.tensor([0.09]), 6, 1e-4)
+    with pytest.raises(ValueError):
+        validate_down_stair_ray_heights(torch.tensor([0.63]), torch.tensor([0.0]),
+                                        torch.tensor([0.09]), 6, 1e-4)

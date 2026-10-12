@@ -9,6 +9,7 @@ from isaaclab.utils import configclass
 
 @configclass
 class StairEvalCfg:
+    down_step_heights_m: tuple[float, ...] = (0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15)
     low_step_height_m: float = 0.09
     high_step_height_m: float = 0.19
     low_gap_width_m: float = 0.10
@@ -21,8 +22,13 @@ class StairEvalCfg:
     top_position_margin_m: float = 0.1
     spawn_lateral_range_m: float = 0.25
     spawn_forward_m: float = 1.0
+    center_spawn_forward_m: float = 0.0
     boundary_stop_forward_m: float = 3.5
     boundary_edge_margin_m: float = 0.5
+    down_stair_ray_height_m: float = 20.0
+    rough_max_heights_m: tuple[float, ...] = (0.04, 0.06, 0.08)
+    rough_training_max_height_m: float = 0.06
+    rough_success_forward_m: float = 3.0
     gap_spawn_forward_m: float = 0.0
     gap_probe_ray_height_m: float = 20.0
     gap_probe_inner_inset_m: float = 0.05
@@ -47,6 +53,7 @@ class StudentFixedEvalCfg:
     """Phase 3 student와 teacher 상한의 고정 평가 샘플 예산."""
 
     step_heights_m: tuple[float, ...] = (0.09, 0.10, 0.11, 0.12, 0.13, 0.14, 0.15)
+    rough_max_heights_m: tuple[float, ...] = (0.04, 0.06, 0.08)
     envs_per_height: int = 128
     seed: int = 43
     spawn_forward_m: float = 0.0
@@ -80,6 +87,33 @@ def stair_progress(root_xyz: torch.Tensor, origin_xyz: torch.Tensor, start_z: to
     return reached_top, gain / step_heights
 
 
+def down_stair_geometry(size_xy: tuple[float, float], border_width: float,
+                        platform_width: float, step_width: float) -> tuple[int, float, float]:
+    """중앙 꼭대기에서 +x로 내려갈 때의 단 수·첫 하강 경계·마지막 단 바깥 경계."""
+    return stair_geometry(size_xy, border_width, platform_width, step_width)
+
+
+def down_stair_progress(root_xyz: torch.Tensor, origin_xyz: torch.Tensor, start_z: torch.Tensor,
+                        step_heights: torch.Tensor, stair_count: int, outer_edge: float,
+                        height_fraction: float, position_margin: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """출발 높이 기준 몸통 하강 단 수와 마지막 단 도달 여부."""
+    drop = start_z - root_xyz[:, 2]
+    forward = root_xyz[:, 0] - origin_xyz[:, 0]
+    reached = (drop >= height_fraction * stair_count * step_heights) & (forward >= outer_edge - position_margin)
+    return reached, drop / step_heights
+
+
+def down_stair_failure_reason(success: bool, failed: bool, timed_out: bool,
+                              max_forward_m: float, first_edge_m: float) -> str:
+    if success:
+        return "success"
+    if failed:
+        return "fall_termination"
+    if timed_out and max_forward_m < first_edge_m:
+        return "top_stall"
+    return "other"
+
+
 def update_swing_foot_peak(peak: torch.Tensor, foot_z: torch.Tensor, contact_force_w: torch.Tensor,
                            air_time: torch.Tensor, near_step: torch.Tensor,
                            contact_threshold: float, min_air_time: float) -> torch.Tensor:
@@ -103,6 +137,37 @@ def fixed_height_stair_cfg(template, height_m: float, proportion: float):
         step_width=template.step_width, platform_width=template.platform_width,
         border_width=template.border_width, holes=template.holes,
     )
+
+
+def fixed_height_down_stair_cfg(template, height_m: float, proportion: float):
+    """학습용 EasyDownCfg를 버리고 IsaacLab 원본 피라미드 계단을 생성."""
+    if height_m <= 0 or proportion <= 0:
+        raise ValueError("평가 계단 높이와 비율은 양수여야 한다")
+    return terrain_gen.MeshPyramidStairsTerrainCfg(
+        proportion=proportion, step_height_range=(height_m, height_m),
+        step_width=template.step_width, platform_width=template.platform_width,
+        border_width=template.border_width, holes=template.holes,
+    )
+
+
+def validate_down_stair_origins(origin_z: torch.Tensor, heights: torch.Tensor,
+                                stair_count: int, tolerance_m: float) -> None:
+    if origin_z.shape != heights.shape or origin_z.ndim != 1 or stair_count < 1 or tolerance_m < 0:
+        raise ValueError("내려가는 계단 원점 검사 입력이 올바르지 않다")
+    expected = (stair_count + 1) * heights
+    if not torch.isfinite(origin_z).all() or not torch.allclose(origin_z, expected, atol=tolerance_m, rtol=0):
+        raise ValueError("내려가는 계단의 중앙 플랫폼 높이가 요청 높이와 다르다")
+
+
+def validate_down_stair_ray_heights(center_z: torch.Tensor, last_step_z: torch.Tensor,
+                                    heights: torch.Tensor, stair_count: int, tolerance_m: float) -> None:
+    """실제 USD ray가 중앙 꼭대기와 바깥 마지막 단의 높이 차를 측정했는지 확인."""
+    if center_z.shape != heights.shape or last_step_z.shape != heights.shape or center_z.ndim != 1:
+        raise ValueError("내려가는 계단 ray 높이는 같은 [N] shape이어야 한다")
+    if not torch.isfinite(center_z).all() or not torch.isfinite(last_step_z).all():
+        raise ValueError("내려가는 계단 ray가 지면을 찾지 못했다")
+    if not torch.allclose(center_z - last_step_z, stair_count * heights, atol=tolerance_m, rtol=0):
+        raise ValueError("내려가는 계단의 실제 USD 높이 차가 요청한 단 수×높이와 다르다")
 
 
 def validate_stair_origins(origin_z: torch.Tensor, heights: torch.Tensor,
