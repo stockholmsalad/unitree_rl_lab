@@ -1,5 +1,13 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-13 — Phase 3 JEPA 분산 하한 CLI·진단
+
+사용자 관찰: pilab에서 teacher를 `model_17000.pt`로 바꾼 GRU+JEPA seed 43 런의 iteration 300에서 EMA context target 분산 평균이 0.0017(원고 런 0.115)로 줄고, 진단 copy 손실 2021, latent 손실 2.46(GRU 대조군 0.90)이 나왔다. 정규화 분모가 너무 작아지는지를 확인·제어하도록 `train_student_depth.py`에 `--jepa_variance_floor`를 추가했다. `StudentTrainCfg` 기본값 **1e-6은 유지**하여 기존 실행을 재현할 수 있게 했다.
+
+분모는 유효 JEPA target의 **차원별 배치 분산**을 구한 다음 각 차원에 `clamp_min(floor)`를 적용한다. 이 동일한 분모를 GRU+JEPA의 predictor 손실, GRU+copy의 online identity 손실, EMA→EMA 진단 `jepa_copy_loss`, online→EMA 진단 `jepa_copy_online_loss`에 쓴다. `Diagnosis/jepa_target_var`는 하한 적용 **전** 분산의 차원 평균이다. 새 `Diagnosis/jepa_var_floor_active_frac`는 분산이 하한보다 작은 차원의 비율이며, `STUDENT_ITER`에는 `floor_frac`로 표시한다. 무효 JEPA 쌍만 있는 미니배치에서는 0으로 기록한다.
+
+검증: Isaac 앱 내부 전체 테스트 **120개 통과**. 순수 함수 테스트에서 일부 차원만 하한 아래인 target으로 `floor_frac=1/3`과 네 손실의 공통 분모를 확인했고, 모든 차원이 하한 위인 경우 0을 확인했다. Z790에서 기존 로컬 teacher `model_2999.pt`와 해당 고정 통계로 **64 env·2 iteration**만 실행했다(`--jepa_variance_floor 0.05`, 각 8 optimizer step/iteration). GRU+JEPA의 iteration 1/2는 `jepa=0.35717/0.49815`, `target_var=0.000079/0.000062`, `floor_frac=1.000/1.000`; GRU+copy는 `jepa=2.09996/4.70538`, `copy_online=2.09996/4.70538`, `floor_frac=1.000/1.000`이었다. 두 스모크는 정상 종료했다. 이는 CLI·로깅·공통 하한 경로 검증이며, pilab의 `model_17000.pt` 기반 런과 성능 비교할 수 없다. 본 학습은 시작하지 않았다.
+
 ## 2026-10-12 — 졸업논문 고정 평가에 내려가는 계단·비정형 지형 추가
 
 CLAUDE.md의 2026-10-12 평가 범위 결정에 따라 teacher와 student 공통 고정 평가에 `stairs_down`, `rough`를 추가했다. 학습 지형·학습 코드와 기존 `stairs`·`flat`·`gap` 평가는 바꾸지 않았다. Gap 코드는 기존 원고 수치 재현용으로 유지하며 졸업논문 평가 범위에는 넣지 않는다.

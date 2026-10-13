@@ -24,6 +24,7 @@ parser.add_argument("--condition_source", choices=("command", "realized_displace
 parser.add_argument("--jepa_target", choices=("context", "frame_embedding"))
 parser.add_argument("--lambda_j", type=float)
 parser.add_argument("--jepa_warmup_iterations", type=int)
+parser.add_argument("--jepa_variance_floor", type=float)
 parser.add_argument("--no_init_at_random_ep_len", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -53,7 +54,7 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 def main() -> None:
     overrides = {key: value for key in ("num_mini_batches", "num_learning_epochs",
                                          "jepa_target_mode", "condition_source", "jepa_target", "lambda_j",
-                                         "jepa_warmup_iterations")
+                                         "jepa_warmup_iterations", "jepa_variance_floor")
                  if (value := getattr(args, key)) is not None}
     if args.no_init_at_random_ep_len:
         overrides["init_at_random_ep_len"] = False
@@ -155,7 +156,8 @@ def main() -> None:
         update_keys = ("Loss/latent", "Loss/action", "Loss/jepa", "Loss/total",
                        "Diagnosis/action_abs_error", "Diagnosis/z_abs_error", "Diagnosis/latent_std",
                        "Diagnosis/jepa_copy_loss", "Diagnosis/jepa_copy_online_loss",
-                       "Diagnosis/jepa_target_var", "Diagnosis/jepa_online_context_var")
+                       "Diagnosis/jepa_target_var", "Diagnosis/jepa_online_context_var",
+                       "Diagnosis/jepa_var_floor_active_frac")
         sums = {key: 0.0 for key in update_keys}
         for _ in range(train.num_learning_epochs):
             env_batches = env_batch_indices(env.num_envs, train.num_mini_batches, device, shuffle=True)
@@ -174,6 +176,7 @@ def main() -> None:
                 copy_online_loss = context.new_zeros(())
                 target_var = context.new_zeros(())
                 online_context_var = context.new_zeros(())
+                floor_frac = context.new_zeros(())
                 if mini_mask is not None:
                     with torch.no_grad():
                         if train.jepa_target == "context":
@@ -193,7 +196,7 @@ def main() -> None:
                     )
                     source_ema = ema_context[:-horizon_steps]
                     pred = model.predict(source, condition)
-                    jepa_loss, copy_loss, copy_online_loss, target_var, online_context_var = normalized_jepa_with_copy(
+                    jepa_loss, copy_loss, copy_online_loss, target_var, online_context_var, floor_frac = normalized_jepa_with_copy(
                         pred, source, source_ema, target, mini_mask,
                         train.jepa_variance_floor,
                     )
@@ -211,7 +214,7 @@ def main() -> None:
                           (student_z.detach() - mini["teacher_z"]).abs().mean().item(),
                           student_z.detach().std(dim=(0, 1)).mean().item(),
                           copy_loss.item(), copy_online_loss.item(), target_var.item(),
-                          online_context_var.item())
+                          online_context_var.item(), floor_frac.item())
                 for key, value in zip(update_keys, values):
                     sums[key] += value
         state = state.detach()
@@ -247,6 +250,7 @@ def main() -> None:
               f"copy_online={logs['Diagnosis/jepa_copy_online_loss']:.5f} "
               f"pred_over_copy={logs['Diagnosis/jepa_pred_over_copy']:.3f} "
               f"target_var={logs['Diagnosis/jepa_target_var']:.6f} "
+              f"floor_frac={logs['Diagnosis/jepa_var_floor_active_frac']:.3f} "
               f"online_var={logs['Diagnosis/jepa_online_context_var']:.6f} "
               f"lambda_j={lambda_j:.4f} "
               f"weighted_over_latent={logs['Diagnosis/jepa_weighted_over_latent']:.3f} "

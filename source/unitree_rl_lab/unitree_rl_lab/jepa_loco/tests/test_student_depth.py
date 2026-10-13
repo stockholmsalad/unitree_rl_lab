@@ -75,10 +75,10 @@ def test_normalized_jepa_scale_and_copy_ratio():
     target = torch.tensor([[[1.0, 2.0]], [[3.0, 4.0]], [[5.0, 6.0]]])
     pred = source_ema + 0.5
     mask = torch.ones(3, 1, dtype=torch.bool)
-    loss, copy, copy_online, variance, online_var = normalized_jepa_with_copy(
+    loss, copy, copy_online, variance, online_var, floor_frac = normalized_jepa_with_copy(
         pred, source_online, source_ema, target, mask, 1.0e-6,
     )
-    scaled, scaled_copy, scaled_online, scaled_variance, scaled_online_var = normalized_jepa_with_copy(
+    scaled, scaled_copy, scaled_online, scaled_variance, scaled_online_var, scaled_floor_frac = normalized_jepa_with_copy(
         pred * 7, source_online * 7, source_ema * 7, target * 7, mask, 1.0e-6,
     )
     torch.testing.assert_close(loss, scaled)
@@ -86,12 +86,34 @@ def test_normalized_jepa_scale_and_copy_ratio():
     torch.testing.assert_close(copy_online, scaled_online)
     torch.testing.assert_close(scaled_variance, variance * 49)
     torch.testing.assert_close(scaled_online_var, online_var * 49)
+    assert floor_frac.item() == scaled_floor_frac.item() == 0
     assert copy_online > copy
-    copy_pred, copy_reference, _, _, _ = normalized_jepa_with_copy(
+    copy_pred, copy_reference, _, _, _, _ = normalized_jepa_with_copy(
         source_ema, source_online, source_ema, target, mask, 1.0e-6,
     )
     torch.testing.assert_close(copy_pred / copy_reference, torch.ones(()))
     assert loss < copy
+
+
+def test_jepa_variance_floor_is_per_dimension_and_shared_by_all_losses():
+    target = torch.tensor([[[0.0, 0.0, 0.0]], [[1.0, 0.2, 2.0]]])
+    pred = target + 1.0
+    source_ema = target + 1.0
+    source_online = target + 2.0
+    mask = torch.ones(2, 1, dtype=torch.bool)
+    loss, copy, copy_online, target_var, _, floor_frac = normalized_jepa_with_copy(
+        pred, source_online, source_ema, target, mask, 0.05,
+    )
+    expected = (1 / 0.25 + 1 / 0.05 + 1 / 1.0) / 3
+    assert loss.item() == pytest.approx(expected)
+    assert copy.item() == pytest.approx(expected)
+    assert copy_online.item() == pytest.approx(4 * expected)
+    assert target_var.item() == pytest.approx((0.25 + 0.01 + 1.0) / 3)
+    assert floor_frac.item() == pytest.approx(1 / 3)
+    _, _, _, _, _, no_floor_frac = normalized_jepa_with_copy(
+        pred, source_online, source_ema, target, mask, 0.005,
+    )
+    assert no_floor_frac.item() == 0.0
 
 
 def test_gru_copy_uses_online_identity_and_trains_encoder():
@@ -105,7 +127,7 @@ def test_gru_copy_uses_online_identity_and_trains_encoder():
         ema, _ = model.encode_sequence(depth, fresh, reset, target=True)
     source_online, source_ema, target_ema = context[:-1], ema[:-1], ema[1:]
     pred = model.predict(source_online, torch.zeros(3, 2, 3))
-    loss, copy, copy_online, _, _ = normalized_jepa_with_copy(
+    loss, copy, copy_online, _, _, _ = normalized_jepa_with_copy(
         pred, source_online, source_ema, target_ema, torch.ones(3, 2, dtype=torch.bool), 1.0e-6,
     )
     torch.testing.assert_close(pred, source_online)
@@ -129,7 +151,7 @@ def test_gru_jepa_predictor_receives_gradient():
     with torch.no_grad():
         ema, _ = model.encode_sequence(depth, fresh, reset, target=True)
     pred = model.predict(context[:-1], torch.zeros(3, 2, 3))
-    loss, _, _, _, _ = normalized_jepa_with_copy(
+    loss, _, _, _, _, _ = normalized_jepa_with_copy(
         pred, context[:-1], ema[:-1], ema[1:], torch.ones(3, 2, dtype=torch.bool), 1.0e-6,
     )
     loss.backward()
