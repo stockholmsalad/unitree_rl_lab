@@ -118,6 +118,16 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
   `teacher_latent_stats_s42.pt`는 재사용하지 않는다.
 - **student 재증류:** 4개 비교군(no_memory, gru, gru_jepa, gru_copy)을 다시 학습한다.
   학습 설정은 기존 Phase 3 설정을 그대로 쓴다.
+- **2026-10-13 JEPA 정규화 분산 하한 0.05 (사용자 결정):**
+  - **증상:** 17000 teacher로 학습한 gru_jepa seed 43이 iteration 300에서 무너졌다.
+    - EMA target 분산이 0.0017까지 줄었다.
+    - 진단 copy 손실이 2021이었다.
+    - latent 손실이 2.46으로, gru의 0.90보다 크게 나빴다.
+  - **결정:** 그 run은 중단했다. gru_jepa와 gru_copy는 `--jepa_variance_floor 0.05`로 다시 학습한다.
+  - **근거:** 원고 run의 정상 구간 target 분산은 0.115~0.185였다.
+    0.05는 그 구간에서 작동하지 않고, 분산이 무너질 때만 증폭을 최대 20배로 제한한다.
+  - **범위:** config 기본값은 기존 run 재현을 위해 1e-6으로 둔다.
+    gru와 no_memory는 JEPA 손실이 없어서 이 설정의 영향을 받지 않는다.
 
 ### 연구 실험 순서와 통과 조건
 
