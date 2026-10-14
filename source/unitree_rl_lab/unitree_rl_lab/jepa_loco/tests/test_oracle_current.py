@@ -9,6 +9,8 @@ from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import (
     OracleCurrentEnvCfg,
     OracleCurrentFutureEnvCfg,
     OracleCurrentEasyStartEnvCfg,
+    OracleCurrentEasyStartTightTrackEnvCfg,
+    OracleCurrentEasyStartTightTrackEnvCfg_PLAY,
     OracleCurrentFutureEasyStartEnvCfg,
     OracleCurrentFutureEasyStartEnvCfg_PLAY,
     OracleWideEnvCfg,
@@ -16,12 +18,45 @@ from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import (
 from unitree_rl_lab.jepa_loco.envs.oracle_heightmap import sample_command_future_patch
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import terrain_levels_path
+from unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env import tracking_step_diagnostics
 from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import (
     OracleCurrentPPORunnerCfg,
+    OracleCurrentTightTrackPPORunnerCfg,
     OracleWidePPORunnerCfg,
     OracleCurrentFuturePPORunnerCfg,
     OracleCurrentFutureEasyStartPPORunnerCfg,
 )
+
+
+def test_tight_track_changes_only_linear_tracking_std_and_experiment_name():
+    current = OracleCurrentEasyStartEnvCfg()
+    tight = OracleCurrentEasyStartTightTrackEnvCfg()
+    play = OracleCurrentEasyStartTightTrackEnvCfg_PLAY()
+    assert current.tracking.lin_vel_std == current.rewards.track_lin_vel_xy.params["std"] == 0.5
+    assert tight.tracking.lin_vel_std == tight.rewards.track_lin_vel_xy.params["std"] == 0.25
+    assert play.rewards.track_lin_vel_xy.params["std"] == 0.25
+    current_rewards = current.rewards.to_dict()
+    tight_rewards = tight.rewards.to_dict()
+    tight_rewards["track_lin_vel_xy"]["params"]["std"] = 0.5
+    assert tight_rewards == current_rewards
+    for name in ("scene", "observations", "commands", "terminations", "events", "curriculum",
+                 "progress", "swing_clearance", "nominal_pose"):
+        assert getattr(current, name).to_dict() == getattr(tight, name).to_dict(), name
+    assert current.tracking.stop_command_threshold_mps == tight.tracking.stop_command_threshold_mps
+    assert current.tracking.stop_body_speed_threshold_mps == tight.tracking.stop_body_speed_threshold_mps
+    base_runner = OracleCurrentPPORunnerCfg().to_dict()
+    tight_runner = OracleCurrentTightTrackPPORunnerCfg().to_dict()
+    tight_runner["experiment_name"] = base_runner["experiment_name"]
+    assert tight_runner == base_runner
+
+
+def test_tracking_step_diagnostics_body_frame_thresholds():
+    command = torch.tensor([[0.6, 0.0], [0.3, 0.0], [0.0, 0.4], [0.6, 0.0]])
+    body = torch.tensor([[0.0, 0.0], [0.0, 0.0], [0.0, 0.09], [0.1, 0.0]])
+    error, stopped = tracking_step_diagnostics(command, body, 0.3, 0.1)
+    assert error.shape == stopped.shape == (4,)
+    torch.testing.assert_close(error, torch.tensor([0.6, 0.3, 0.31, 0.5]))
+    assert stopped.tolist() == [True, False, True, False]
 
 
 def test_oracle_cfg_has_heightscan_and_no_camera():

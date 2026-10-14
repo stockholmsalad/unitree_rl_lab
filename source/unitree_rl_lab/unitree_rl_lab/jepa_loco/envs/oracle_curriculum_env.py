@@ -12,6 +12,21 @@ from .path_curriculum import (
 from .obstacle_diagnostics import TERMINATION_NAMES, first_tread_contact, termination_classes
 
 
+def tracking_step_diagnostics(command_xy: torch.Tensor, body_velocity_xy: torch.Tensor,
+                              command_threshold_mps: float, body_speed_threshold_mps: float
+                              ) -> tuple[torch.Tensor, torch.Tensor]:
+    """몸통 좌표 명령·속도의 L2 오차와 명령 중 정지 여부를 env별로 계산한다."""
+    if command_xy.shape != body_velocity_xy.shape or command_xy.ndim != 2 or command_xy.shape[1] != 2:
+        raise ValueError("command_xy와 body_velocity_xy는 같은 [N,2] shape이어야 한다")
+    if command_threshold_mps < 0 or body_speed_threshold_mps < 0:
+        raise ValueError("정지 진단 속도 임계값은 음수일 수 없다")
+    command_speed = torch.linalg.vector_norm(command_xy, dim=1)
+    body_speed = torch.linalg.vector_norm(body_velocity_xy, dim=1)
+    return torch.linalg.vector_norm(body_velocity_xy - command_xy, dim=1), (
+        (command_speed > command_threshold_mps) & (body_speed < body_speed_threshold_mps)
+    )
+
+
 class OracleCurriculumEnv(JepaDiagnosticEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         # train.py가 cfg.seed를 설정한 뒤 환경을 생성한다. 세 oracle에 동일한 seed 지형을 고정한다.
@@ -21,6 +36,9 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         self.episode_path_length_m = torch.zeros(self.num_envs, device=self.device)
         self._path_previous_xy = self.scene["robot"].data.root_pos_w[:, :2].clone()
         self._path_valid = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self._tracking_error_sum = torch.zeros(self.num_envs, device=self.device)
+        self._tracking_stopped_steps = torch.zeros(self.num_envs, device=self.device)
+        self._tracking_step_count = torch.zeros(self.num_envs, device=self.device)
         generator = self.cfg.scene.terrain.terrain_generator
         self._terrain_type_names = list(generator.sub_terrains)
         self._terrain_column_type_ids = terrain_column_type_ids(
@@ -72,6 +90,20 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         self._front_contact_foot_ids = [contact_by_name[name] for name in foot_names if name.startswith("F")]
         if len(self._front_robot_foot_ids) != 2:
             raise ValueError("앞발 접촉 진단에는 앞발 두 개가 필요하다")
+
+    def _accumulate_tracking(self, ids):
+        if ids.numel() == 0:
+            return
+        command = self.command_manager.get_command("base_velocity")[ids, :2]
+        body_velocity = self.scene["robot"].data.root_lin_vel_b[ids, :2]
+        error, stopped = tracking_step_diagnostics(
+            command, body_velocity,
+            self.cfg.tracking.stop_command_threshold_mps,
+            self.cfg.tracking.stop_body_speed_threshold_mps,
+        )
+        self._tracking_error_sum[ids] += error
+        self._tracking_stopped_steps[ids] += stopped.float()
+        self._tracking_step_count[ids] += 1
 
     def _update_progress(self, ids):
         if ids.numel() == 0:
@@ -129,6 +161,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
         # IsaacLab은 이 호출 직후 curriculum을 계산한다. 종료를 일으킨 마지막 스텝을 먼저 더한다.
         if hasattr(self, "episode_path_length_m"):
             ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+            self._accumulate_tracking(ids)
             xy = self.scene["robot"].data.root_pos_w[ids, :2]
             self.episode_path_length_m[ids] += xy_path_increment(xy, self._path_previous_xy[ids], self._path_valid[ids])
             self._update_progress(ids)
@@ -156,6 +189,9 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             reward_sums = {
                 name: values[ids].clone() for name, values in self.reward_manager._episode_sums.items()
             }
+            tracking_error_sum = self._tracking_error_sum[ids].clone()
+            tracking_stopped_steps = self._tracking_stopped_steps[ids].clone()
+            tracking_step_count = self._tracking_step_count[ids].clone()
             if hasattr(self, "_swing_clearance_sum"):
                 clearance_sum = self._swing_clearance_sum[ids].clone()
                 clearance_count = self._swing_clearance_count[ids].clone()
@@ -175,6 +211,16 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             log = self.extras.setdefault("log", {})
             for type_id, name in enumerate(names):
                 mask = type_ids == type_id
+                if mask.any():
+                    prefix = f"Diagnosis/tracking/{name}"
+                    log[f"{prefix}/episode_count"] = mask.sum()
+                    log[f"{prefix}/episode_track_lin_vel_xy_reward"] = reward_sums["track_lin_vel_xy"][mask].mean()
+                    log[f"{prefix}/episode_velocity_error_xy_mps"] = (
+                        tracking_error_sum[mask] / tracking_step_count[mask].clamp_min(1)
+                    ).mean()
+                    log[f"{prefix}/stopped_step_frac"] = (
+                        tracking_stopped_steps[mask].sum() / tracking_step_count[mask].sum().clamp_min(1)
+                    )
                 obstacle_mask = mask & (levels >= self.cfg.progress.warmup_levels)
                 if obstacle_mask.any() and self._obstacle_clearance_edges[type_id] > 0:
                     log[f"Curriculum/obstacle_clear_rate/{name}"] = cleared[obstacle_mask].float().mean()
@@ -219,6 +265,9 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
             if stair.any():
                 log["Diagnosis/stairs_up/first_step_progress_rate"] = advanced[stair].float().mean()
             self.episode_path_length_m[ids] = 0.0
+            self._tracking_error_sum[ids] = 0.0
+            self._tracking_stopped_steps[ids] = 0.0
+            self._tracking_step_count[ids] = 0.0
             self._path_previous_xy[ids] = self.scene["robot"].data.root_pos_w[ids, :2]
             self._path_valid[ids] = True
             self._terrain_type_per_env[ids] = self._terrain_column_type_ids[self.scene.terrain.terrain_types[ids].long()]
@@ -241,6 +290,7 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
     def step(self, action):
         obs, reward, terminated, truncated, extras = super().step(action)
         active = ~(terminated | truncated)
+        self._accumulate_tracking(torch.nonzero(active, as_tuple=True)[0])
         xy = self.scene["robot"].data.root_pos_w[:, :2]
         self.episode_path_length_m += xy_path_increment(xy, self._path_previous_xy, active & self._path_valid)
         self._update_progress(torch.nonzero(active, as_tuple=True)[0])
