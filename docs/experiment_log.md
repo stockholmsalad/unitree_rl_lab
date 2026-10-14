@@ -12,6 +12,25 @@
 
 **사전 판정 규칙:** 동일 checkpoint 18000/18500/19000/19500/20000을 고정 평가(seed 43, 높이당 128 env)에서 오르기 9~15 cm, 내리기 15~20 cm, 비정형 6/8/10/12 cm로 비교한다. 평지 성공률도 별도 확인한다. 채택하려면 오르기 14·15 cm와 내리기 19·20 cm 성공률이 std=0.5 대조군 같은 checkpoint 평균보다 모두 높고, timeout 감소에서 개선이 나오며 낙상은 각 높이에서 17000보다 5%p 이상 증가하지 않아야 한다. 비정형 10·12 cm 성공률 및 속도 오차는 17000보다 각각 5%p·20% 이상 악화되지 않아야 하고 평지는 100%여야 한다. 상위 checkpoint는 seed 44로 재평가하고 사용자가 play 영상에서 보행을 확인한다. 만족하지 못하면 17000을 유지하고 음성 결과로 기록한다. **현재 teacher 교체 결정은 하지 않았다.**
 
+## 2026-10-14 — Phase 3 student 고유수용감각 입력 옵션
+
+처음 구조도와 CLAUDE.md §4의 `P(h_t,p_t,c_t,Δ)`에는 고유수용감각 인코더가 있으나 기존 student는 Depth만 기억하고 predictor에는 context와 명령만 넣었다. 사각지대 지형의 상대 위치를 추적할 때 이동·발 접촉의 이력이 필요할 수 있다는 가설을 검증하도록 `--proprio_input` 옵션을 추가했다. 기본값은 **꺼짐**이다. 원시 `obs["policy"]` 45차원을 고정 teacher의 `actor.obs_normalizer`로 정규화한 뒤 ELU MLP(기본 45→64→64, 층 크기 CLI/config 설정)로 임베딩한다. 새 depth 프레임이 들어온 스텝에만 GRU 입력 `[f_t,p_t]` 또는 no-memory projection 입력 `[f_t,p_t]`를 갱신하고, 프레임 사이에는 표현을 유지한다. JEPA predictor에는 `[h_t,p_t,command|realized_displacement]`를 넣는다. `gru_copy` predictor는 항등을 유지한다. EMA는 proprio MLP도 각 optimizer step 뒤 갱신하고 target 시점의 실제 policy 관측을 받는다. `frame_embedding`의 EMA CNN target 경로는 바꾸지 않았다.
+
+이 변경은 student 전용이다. 고정 teacher 정책 head·정규화기, 지형 head, 손실 계수, DAgger, TBPTT, 관측·env는 바꾸지 않았다. 옵션이 없는 기존 checkpoint는 꺼짐으로 읽는다. `StudentInferencePolicy`가 encoder에 `obs["policy"]`와 고정 teacher normalizer를 전달하므로 공통 평가 호출자인 `eval_student_fixed.py`, `eval_stairs_fixed.py`의 student 경로, `viz_student_depth.py`도 같은 추론 경로를 사용한다. 네 방법 사이의 성능 우열은 고정 평가 전까지 주장하지 않는다.
+
+**검증:** Isaac 앱 내부 전체 테스트 **140개 통과**. 여기에는 꺼진 옵션의 수동 구 구현 경로와 bitwise 동치, 네 방법 shape·fresh gate·중간 reset, L_z의 proprio MLP 기울기, EMA 업데이트와 teacher 동결, `frame_embedding` target 독립성, 옵션 키가 없는 실제 17000 depth-only checkpoint 로드, 새 checkpoint 추론이 포함된다. 로컬 통계 파일의 teacher 경로는 pilab 절대 경로여서, Z790 스모크에는 평균·표준편차 값은 유지하고 경로만 로컬 checkpoint에 맞춘 `/tmp` 사본을 사용했다.
+
+Z790에서 teacher `model_17000.pt`·고정 latent 통계로 네 방법 각각 **256 env·20 iteration**을 완료했다. 아래 손실은 첫 iteration→20번째 iteration이며, iteration 시간은 마지막 10회의 중앙값이다. 네 run 모두 20/20 로그에서 NaN·무한대 손실이 없었다. 초기 손실 감소는 연결·최적화의 짧은 확인이며 성능 비교로 해석하지 않는다.
+
+| 방법 | latent 손실 처음→끝 | JEPA 손실 처음→끝 | 시간/iter | 최대 PyTorch 할당 |
+|---|---:|---:|---:|---:|
+| no_memory + proprio | 225.76→1.94 | 없음 | 5.92 s | 2.32 GiB |
+| GRU + proprio | 212.38→2.22 | 없음 | 6.06 s | 2.32 GiB |
+| GRU+JEPA + proprio, floor 0.05 | 212.38→2.08 | 0.443→0.031 | 6.22 s | 2.33 GiB |
+| GRU+copy + proprio, floor 0.05 | 212.38→2.21 | 2.530→0.970 | 6.21 s | 2.33 GiB |
+
+방법 사이의 최대 PyTorch 할당 차이는 약 0.01 GiB다. 이는 renderer를 포함한 전체 VRAM 차이가 아니며 2048 env pilab 실행 시간을 확정하지 않는다. 저장된 GRU+proprio `model_20.pt`를 공통 `eval_student_fixed.py`로 9 cm·2 env·20 step 재생해 `student_method=gru`, per-env 2건, JSON 출력과 정상 종료를 확인했다. 이 재생은 성공률 평가가 아니다. 스모크 checkpoint 출력 폴더는 확인 후 삭제한다. 본 학습은 실행하지 않았다.
+
 ## 2026-10-13 — Phase 3 JEPA 분산 하한 CLI·진단
 
 사용자 관찰: pilab에서 teacher를 `model_17000.pt`로 바꾼 GRU+JEPA seed 43 런의 iteration 300에서 EMA context target 분산 평균이 0.0017(원고 런 0.115)로 줄고, 진단 copy 손실 2021, latent 손실 2.46(GRU 대조군 0.90)이 나왔다. 정규화 분모가 너무 작아지는지를 확인·제어하도록 `train_student_depth.py`에 `--jepa_variance_floor`를 추가했다. `StudentTrainCfg` 기본값 **1e-6은 유지**하여 기존 실행을 재현할 수 있게 했다.

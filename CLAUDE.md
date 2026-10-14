@@ -128,6 +128,37 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
   seed 44 재평가와 사용자 play 영상 정상 보행 확인이 모두 필요하다. 실패하면
   `model_17000.pt`를 유지하고 음성 결과로 기록한다.
 
+### 2026-10-14 student 고유수용감각 입력 (처음 구조도 복원)
+
+처음 구조도는 Depth 시퀀스 context와 고유수용감각 시퀀스 임베딩을 함께
+predictor에 넣는다. 기존 Phase 3 student는 Depth만 GRU로 기억하고
+predictor도 context와 명령 3차원만 받았다. 이동·발 접촉 이력이 사각지대
+지형의 상대 위치 추정에 필요할 수 있으므로 아래 연결을 선택 옵션으로 추가한다.
+**기본값은 꺼짐**이며 기존 checkpoint와 depth-only run의 구조·수치를 유지한다.
+
+1. `obs["policy"]`의 원시 45차원 값을 **고정 teacher의** `actor.obs_normalizer`로
+   정규화한 뒤 학습 가능한 ELU MLP(기본 45→64→64)에 통과시켜 `p_t`를 만든다.
+   층 크기와 사용 여부는 student 설정에 노출한다. teacher normalizer와
+   정책 head `π_T`는 계속 고정한다.
+2. JEPA predictor 입력을 `[h_t,p_t,명령 또는 실현 변위]`로 확장한다.
+   `gru_copy`의 online identity에는 predictor가 없어 영향을 받지 않는다.
+3. GRU 계열의 입력을 `[f_t,p_t]`로, `no_memory`의 현재 프레임 projection
+   입력도 `[f_t,p_t]`로 확장한다. 네 비교군의 관측 입력을 맞춘다.
+   초기 그림의 Mamba predictor는 시간 기억을 갖지만 현재 predictor는 MLP다.
+   따라서 고유수용감각의 과거는 backbone에 저장한다. 나중에 Mamba backbone도
+   동일한 결합 입력을 쓴다.
+
+**A안 갱신:** backbone과 no-memory projection은 10 Hz의 `depth_fresh` 스텝에서만
+그 시점 `p_t`를 받고, 프레임 사이에는 context를 유지한다. 사이 5스텝의
+고유수용감각을 요약하는 B안은 후속 후보로만 둔다. EMA target encoder는
+고유수용감각 MLP도 이동평균 사본으로 갖고 실제 target 시점의 policy 관측을
+정규화해 받는다. `frame_embedding` target은 기존 EMA CNN 경로를 유지한다.
+
+초기 그림과 다른 부분: 정책은 고정 teacher head에 `[proprio,ẑ_current]`를
+입력한다. Phase 2의 Depth PPO가 9 cm 첫 단을 넘지 못했고 predictor 출력은
+teacher의 `z_T` 공간과 다르기 때문이다. 행동 후보 K개 대신 현재의 단일
+명령을 조건으로 쓴다(2026-10-06 결정). 새 연결의 우열은 결과 전까지 주장하지 않는다.
+
 ### 2026-10-13 졸업논문 고정 teacher 교체: model_17000
 
 사용자 결정: 졸업논문의 고정 teacher를 Current-EasyStart seed 42를 이어 학습한
