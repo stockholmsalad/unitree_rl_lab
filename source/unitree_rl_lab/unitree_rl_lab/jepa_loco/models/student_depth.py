@@ -11,6 +11,7 @@ from torch import nn
 from .backbone import make_backbone
 from .depth_cnn import DepthCNN
 from .oracle_actor import OracleTerrainActor
+from .student_batches import ProprioHistory, proprio_windows
 from unitree_rl_lab.jepa_loco.eval.latent_noise import TeacherLatentNoise
 
 
@@ -57,13 +58,17 @@ class StudentDepthModel(nn.Module):
                  cnn_kernels: tuple[int, ...] = (5, 3, 3),
                  cnn_strides: tuple[int, ...] = (2, 2, 2),
                  proprio_input: bool = False, proprio_dim: int = 45,
-                 proprio_hidden_dims: tuple[int, ...] = (64, 64)):
+                 proprio_hidden_dims: tuple[int, ...] = (64, 64),
+                 proprio_window: int = 1):
         super().__init__()
         if method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
             raise ValueError(f"student method={method!r}")
         self.method = method
         self.context_dim = context_dim
         self.proprio_input = proprio_input
+        if proprio_window < 1:
+            raise ValueError("proprio_window는 1 이상이어야 한다")
+        self.proprio_window = proprio_window
         if proprio_input and (proprio_dim < 1 or not proprio_hidden_dims or
                               any(width < 1 for width in proprio_hidden_dims)):
             raise ValueError("proprio 입력과 MLP 층 크기는 양수여야 한다")
@@ -92,9 +97,21 @@ class StudentDepthModel(nn.Module):
             ])
             self.ema_proprio_encoder = copy.deepcopy(self.proprio_encoder)
             self.ema_proprio_encoder.requires_grad_(False)
+            if proprio_window > 1:
+                summary_in = proprio_window * (self.proprio_feature_dim + 1)
+                self.proprio_summary = nn.Sequential(
+                    nn.Linear(summary_in, self.proprio_feature_dim), nn.ELU(),
+                )
+                self.ema_proprio_summary = copy.deepcopy(self.proprio_summary)
+                self.ema_proprio_summary.requires_grad_(False)
+            else:
+                self.proprio_summary = None
+                self.ema_proprio_summary = None
         else:
             self.proprio_encoder = None
             self.ema_proprio_encoder = None
+            self.proprio_summary = None
+            self.ema_proprio_summary = None
         self.ema_cnn = copy.deepcopy(self.cnn)
         self.ema_backbone = copy.deepcopy(self.backbone)
         self.ema_frame_projection = copy.deepcopy(self.frame_projection)
@@ -108,17 +125,26 @@ class StudentDepthModel(nn.Module):
         return self.backbone.initial_state(batch, device)
 
     def encode_proprio(self, proprio: torch.Tensor | None, normalizer: nn.Module | None,
-                       target: bool = False) -> torch.Tensor:
+                       target: bool = False, valid: torch.Tensor | None = None) -> torch.Tensor:
         if not self.proprio_input or proprio is None or normalizer is None:
             raise ValueError("proprio 옵션에는 policy 관측과 고정 teacher normalizer가 필요하다")
         if proprio.shape[-1] != self.proprio_dim:
             raise ValueError(f"policy 관측 마지막 차원은 {self.proprio_dim}이어야 한다")
         encoder = self.ema_proprio_encoder if target else self.proprio_encoder
-        return encoder(normalizer(proprio))
+        if self.proprio_window == 1:
+            return encoder(normalizer(proprio))
+        if proprio.shape[-2] != self.proprio_window or valid is None or valid.shape != proprio.shape[:-1]:
+            raise ValueError("K>1이면 proprio [...,K,45]와 valid [...,K]가 필요하다")
+        embeddings = encoder(normalizer(proprio))
+        embeddings = torch.where(valid[..., None], embeddings, torch.zeros_like(embeddings))
+        summary_input = torch.cat((embeddings.flatten(-2), valid.to(embeddings.dtype)), dim=-1)
+        summary = self.ema_proprio_summary if target else self.proprio_summary
+        return summary(summary_input)
 
     def encode_step(self, depth: torch.Tensor, fresh: torch.Tensor,
                     state: torch.Tensor | None, target: bool = False,
                     proprio: torch.Tensor | None = None, proprio_normalizer: nn.Module | None = None,
+                    proprio_valid: torch.Tensor | None = None,
                     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         cnn = self.ema_cnn if target else self.cnn
         backbone = self.ema_backbone if target else self.backbone
@@ -131,7 +157,8 @@ class StudentDepthModel(nn.Module):
             features = cnn(depth[fresh].float())
             if self.proprio_input:
                 features = torch.cat((features, self.encode_proprio(
-                    proprio[fresh] if proprio is not None else None, proprio_normalizer, target)), dim=-1)
+                    proprio[fresh] if proprio is not None else None, proprio_normalizer, target,
+                    proprio_valid[fresh] if proprio_valid is not None else None)), dim=-1)
             updated = projection(features)
             # index_copy는 이전 프레임의 gradient graph를 제자리에서 바꾸지 않는다.
             state = state.index_copy(0, fresh.nonzero(as_tuple=True)[0], updated)
@@ -143,7 +170,8 @@ class StudentDepthModel(nn.Module):
             frame = projection(cnn(depth[fresh].float()))
             if self.proprio_input:
                 frame = torch.cat((frame, self.encode_proprio(
-                    proprio[fresh] if proprio is not None else None, proprio_normalizer, target)), dim=-1)
+                    proprio[fresh] if proprio is not None else None, proprio_normalizer, target,
+                    proprio_valid[fresh] if proprio_valid is not None else None)), dim=-1)
             features[fresh] = frame
         return backbone.gated_step(features, state, fresh)
 
@@ -164,19 +192,28 @@ class StudentDepthModel(nn.Module):
     def encode_sequence(self, depth: torch.Tensor, fresh: torch.Tensor,
                         resets: torch.Tensor, h0: torch.Tensor | None = None,
                         target: bool = False, proprio: torch.Tensor | None = None,
-                        proprio_normalizer: nn.Module | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
+                        proprio_normalizer: nn.Module | None = None,
+                        proprio_prefix: torch.Tensor | None = None,
+                        proprio_prefix_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
         """[T,N,2,H,W]를 에피소드 경계와 10 Hz 새 프레임 gate에 맞춰 재생한다."""
         if depth.ndim != 5 or fresh.shape != depth.shape[:2] or resets.shape != fresh.shape:
             raise ValueError("depth [T,N,2,H,W], fresh/resets [T,N]이어야 한다")
         if self.proprio_input and (proprio is None or proprio.shape[:2] != fresh.shape):
             raise ValueError("proprio sequence는 [T,N,45] 형태여야 한다")
+        windows = masks = None
+        if self.proprio_input and self.proprio_window > 1:
+            if proprio_prefix is None or proprio_prefix_valid is None:
+                raise ValueError("K>1인 sequence에는 rollout 시작 prefix와 valid가 필요하다")
+            windows, masks = proprio_windows(proprio, resets, proprio_prefix, proprio_prefix_valid)
         state = h0
         outs = []
         for t in range(depth.shape[0]):
             if state is not None:
                 state = torch.where(resets[t, :, None], torch.zeros_like(state), state)
             z, state = self.encode_step(depth[t], fresh[t], state, target,
-                                        None if proprio is None else proprio[t], proprio_normalizer)
+                                        (windows[t] if windows is not None else
+                                         None if proprio is None else proprio[t]), proprio_normalizer,
+                                        None if masks is None else masks[t])
             outs.append(z)
         return torch.stack(outs), state
 
@@ -184,11 +221,13 @@ class StudentDepthModel(nn.Module):
         return self.terrain_head(context)
 
     def predict(self, context: torch.Tensor, command: torch.Tensor,
-                proprio: torch.Tensor | None = None, proprio_normalizer: nn.Module | None = None) -> torch.Tensor:
+                proprio: torch.Tensor | None = None, proprio_normalizer: nn.Module | None = None,
+                proprio_valid: torch.Tensor | None = None) -> torch.Tensor:
         if self.method == "gru_copy":
             return context
         if self.proprio_input:
-            return self.predictor(torch.cat((context, self.encode_proprio(proprio, proprio_normalizer), command), dim=-1))
+            return self.predictor(torch.cat((context, self.encode_proprio(
+                proprio, proprio_normalizer, valid=proprio_valid), command), dim=-1))
         return self.predictor(torch.cat((context, command), dim=-1))
 
     @torch.no_grad()
@@ -198,7 +237,8 @@ class StudentDepthModel(nn.Module):
         for online, target in ((self.cnn, self.ema_cnn),
                                (self.backbone, self.ema_backbone),
                                (self.frame_projection, self.ema_frame_projection),
-                               (self.proprio_encoder, self.ema_proprio_encoder)):
+                               (self.proprio_encoder, self.ema_proprio_encoder),
+                               (self.proprio_summary, self.ema_proprio_summary)):
             if online is None:
                 continue
             for p, q in zip(online.parameters(), target.parameters()):
@@ -227,6 +267,7 @@ class StudentInferencePolicy:
             proprio_input=cfg.get("proprio_input", False),
             proprio_dim=cfg.get("proprio_dim", 45),
             proprio_hidden_dims=tuple(cfg.get("proprio_hidden_dims", (64, 64))),
+            proprio_window=cfg.get("proprio_window", 1),
         ).to(device)
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.eval()
@@ -236,6 +277,7 @@ class StudentInferencePolicy:
         self.latent_noise = (TeacherLatentNoise(teacher_std, latent_noise_std, latent_noise_mode, noise_seed)
                              if policy_mode == "teacher" and teacher_std is not None else None)
         self.state: torch.Tensor | None = None
+        self.proprio_history: ProprioHistory | None = None
         self.last_z: torch.Tensor | None = None
         self.last_action_latent: torch.Tensor | None = None
         # no_memory도 10 Hz 프레임을 유지하는 상태가 있으므로 종료 시 초기화한다.
@@ -244,9 +286,15 @@ class StudentInferencePolicy:
     @torch.inference_mode()
     def __call__(self, obs: TensorDict) -> torch.Tensor:
         fresh = obs["depth_fresh"][..., 0] > 0.5
+        policy_input, policy_valid = obs["policy"], None
+        if self.model.proprio_input and self.model.proprio_window > 1:
+            if self.proprio_history is None:
+                self.proprio_history = ProprioHistory(self.model.proprio_window, len(fresh),
+                                                      self.model.proprio_dim, obs["policy"].device)
+            policy_input, policy_valid = self.proprio_history.append(obs["policy"])
         context, self.state = self.model.encode_step(
-            obs["depth"], fresh, self.state, proprio=obs["policy"],
-            proprio_normalizer=self.teacher.actor.obs_normalizer,
+            obs["depth"], fresh, self.state, proprio=policy_input,
+            proprio_normalizer=self.teacher.actor.obs_normalizer, proprio_valid=policy_valid,
         )
         z = self.model.terrain_latent(context)
         self.last_z = z
@@ -260,5 +308,7 @@ class StudentInferencePolicy:
     def reset(self, dones: torch.Tensor) -> None:
         if self.state is not None:
             self.state = torch.where(dones.bool()[:, None], torch.zeros_like(self.state), self.state)
+        if self.proprio_history is not None:
+            self.proprio_history.reset(dones.bool())
         if self.latent_noise is not None:
             self.latent_noise.reset(dones)

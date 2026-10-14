@@ -5,6 +5,51 @@ from __future__ import annotations
 import torch
 
 
+def proprio_windows(policy: torch.Tensor, resets: torch.Tensor, prefix: torch.Tensor,
+                    prefix_valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """[T,N,D] 관측과 rollout 시작 prefix에서 오래된→최신 [T,N,K,D] 창을 만든다."""
+    if policy.ndim != 3 or resets.shape != policy.shape[:2] or prefix.ndim != 3 or \
+            prefix.shape[1:] != policy.shape[1:] or prefix_valid.shape != prefix.shape[:2]:
+        raise ValueError("policy [T,N,D], resets [T,N], prefix [K-1,N,D], valid [K-1,N]")
+    history = prefix
+    valid = prefix_valid.bool()
+    windows, masks = [], []
+    for t in range(policy.shape[0]):
+        if resets[t].any():
+            history = torch.where(resets[t][None, :, None], torch.zeros_like(history), history)
+            valid = valid & ~resets[t][None, :]
+        window = torch.cat((history, policy[t:t + 1]), dim=0)
+        mask = torch.cat((valid, torch.ones_like(resets[t:t + 1])), dim=0)
+        windows.append(window.transpose(0, 1))
+        masks.append(mask.transpose(0, 1))
+        history, valid = window[1:], mask[1:]
+    return torch.stack(windows), torch.stack(masks)
+
+
+class ProprioHistory:
+    """rollout/추론의 env별 최근 K-1 관측을 보관한다."""
+
+    def __init__(self, window: int, num_envs: int, proprio_dim: int, device: torch.device):
+        if window < 1:
+            raise ValueError("proprio_window는 1 이상이어야 한다")
+        self.policy = torch.zeros(window - 1, num_envs, proprio_dim, device=device)
+        self.valid = torch.zeros(window - 1, num_envs, dtype=torch.bool, device=device)
+
+    def append(self, policy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if policy.shape != self.policy.shape[1:]:
+            raise ValueError("현재 policy 관측 shape가 history와 다르다")
+        window = torch.cat((self.policy, policy[None]), dim=0)
+        valid = torch.cat((self.valid, torch.ones_like(policy[None, :, 0], dtype=torch.bool)), dim=0)
+        self.policy, self.valid = window[1:], valid[1:]
+        return window.transpose(0, 1), valid.transpose(0, 1)
+
+    def reset(self, done: torch.Tensor) -> None:
+        if done.shape != self.valid.shape[1:]:
+            raise ValueError("done shape가 history env 축과 다르다")
+        self.policy = torch.where(done[None, :, None], torch.zeros_like(self.policy), self.policy)
+        self.valid = self.valid & ~done[None, :]
+
+
 def initial_episode_lengths(lengths: torch.Tensor, max_episode_length: int,
                             enabled: bool) -> torch.Tensor:
     """rsl-rl init_at_random_ep_len와 동일한 [0,max) 정수 초기 길이."""

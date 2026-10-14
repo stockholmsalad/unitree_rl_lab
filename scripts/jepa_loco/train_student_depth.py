@@ -27,6 +27,7 @@ parser.add_argument("--jepa_warmup_iterations", type=int)
 parser.add_argument("--jepa_variance_floor", type=float)
 parser.add_argument("--proprio_input", action="store_true")
 parser.add_argument("--proprio_hidden_dims", type=int, nargs="+", default=None)
+parser.add_argument("--proprio_window", type=int, default=None)
 parser.add_argument("--no_init_at_random_ep_len", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -45,7 +46,8 @@ import unitree_rl_lab.tasks  # noqa: E402, F401
 from unitree_rl_lab.jepa_loco.agents.student_cfg import StudentTrainCfg  # noqa: E402
 from unitree_rl_lab.jepa_loco.models.student_depth import FrozenCurrentTeacher, StudentDepthModel  # noqa: E402
 from unitree_rl_lab.jepa_loco.models.student_batches import (  # noqa: E402
-    env_batch_indices, initial_episode_lengths, jepa_pair_tensors, select_env_batch,
+    ProprioHistory, env_batch_indices, initial_episode_lengths, jepa_pair_tensors, proprio_windows,
+    select_env_batch,
 )
 from unitree_rl_lab.jepa_loco.models.student_losses import (  # noqa: E402
     distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, normalized_jepa_with_copy,
@@ -64,6 +66,8 @@ def main() -> None:
         overrides["proprio_input"] = True
     if args.proprio_hidden_dims is not None:
         overrides["proprio_hidden_dims"] = tuple(args.proprio_hidden_dims)
+    if args.proprio_window is not None:
+        overrides["proprio_window"] = args.proprio_window
     train = StudentTrainCfg(method=args.method, num_envs=args.num_envs,
                             max_iterations=args.max_iterations, **overrides)
     task = "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
@@ -93,6 +97,7 @@ def main() -> None:
         cnn_strides=train.cnn_strides,
         proprio_input=train.proprio_input, proprio_dim=train.proprio_dim,
         proprio_hidden_dims=train.proprio_hidden_dims,
+        proprio_window=train.proprio_window,
     ).to(device)
     optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad),
                                  lr=train.learning_rate)
@@ -101,6 +106,8 @@ def main() -> None:
     writer = SummaryWriter(output)
     state = model.initial_state(env.num_envs, device)
     ema_state = model.initial_state(env.num_envs, device)
+    proprio_history = (ProprioHistory(train.proprio_window, env.num_envs, train.proprio_dim, device)
+                       if train.proprio_input and train.proprio_window > 1 else None)
 
     for iteration in range(train.max_iterations):
         if device.type == "cuda":
@@ -111,6 +118,9 @@ def main() -> None:
                     if train.method in ("gru_jepa", "gru_copy") else 0.0)
         h0 = state.detach().clone()
         h0_ema = ema_state.detach().clone()
+        if proprio_history is not None:
+            prefix = proprio_history.policy.detach().clone()
+            prefix_valid = proprio_history.valid.clone()
         memory = {key: [] for key in ("depth", "fresh", "policy", "command", "teacher_z",
                                        "teacher_action", "done")}
         if train.condition_source == "realized_displacement" and train.method in ("gru_jepa", "gru_copy"):
@@ -122,12 +132,17 @@ def main() -> None:
         with torch.inference_mode():
             for _ in range(train.rollout_steps):
                 fresh = obs["depth_fresh"][:, 0] > 0.5
+                policy_input, policy_valid = obs["policy"], None
+                if proprio_history is not None:
+                    policy_input, policy_valid = proprio_history.append(obs["policy"])
                 context, state = model.encode_step(obs["depth"], fresh, state,
-                                                   proprio=obs["policy"],
-                                                   proprio_normalizer=teacher.actor.obs_normalizer)
+                                                   proprio=policy_input,
+                                                   proprio_normalizer=teacher.actor.obs_normalizer,
+                                                   proprio_valid=policy_valid)
                 _, ema_state = model.encode_step(obs["depth"], fresh, ema_state, target=True,
-                                                  proprio=obs["policy"],
-                                                  proprio_normalizer=teacher.actor.obs_normalizer)
+                                                  proprio=policy_input,
+                                                  proprio_normalizer=teacher.actor.obs_normalizer,
+                                                  proprio_valid=policy_valid)
                 student_z = model.terrain_latent(context)
                 teacher_z = teacher.terrain_latent(obs["terrain_current"])
                 student_action = teacher.action_from_latent(obs["policy"], student_z)
@@ -152,11 +167,16 @@ def main() -> None:
                 memory["done"].append(done.clone())
                 state[done] = 0
                 ema_state[done] = 0
+                if proprio_history is not None:
+                    proprio_history.reset(done)
                 for name, value in extras.get("log", {}).items():
                     if (name.startswith("Curriculum/terrain_level/") or
                             "obstacle_clear_rate" in name):
                         metrics[name] = value.item() if hasattr(value, "item") else float(value)
         batch = {key: torch.stack(values) for key, values in memory.items()}
+        if proprio_history is not None:
+            batch["proprio_prefix"] = prefix
+            batch["proprio_prefix_valid"] = prefix_valid
         resets = torch.zeros_like(batch["done"])
         resets[1:] = batch["done"][:-1]
         mask_all = None
@@ -180,6 +200,8 @@ def main() -> None:
                 context, _ = model.encode_sequence(
                     mini["depth"], mini["fresh"], mini_resets, mini_h0,
                     proprio=mini["policy"], proprio_normalizer=teacher.actor.obs_normalizer,
+                    proprio_prefix=mini.get("proprio_prefix"),
+                    proprio_prefix_valid=mini.get("proprio_prefix_valid"),
                 )
                 student_z = model.terrain_latent(context)
                 student_action = teacher.action_from_latent(mini["policy"], student_z)
@@ -198,6 +220,8 @@ def main() -> None:
                             ema_context, _ = model.encode_sequence(
                                 mini["depth"], mini["fresh"], mini_resets, mini_h0_ema, target=True,
                                 proprio=mini["policy"], proprio_normalizer=teacher.actor.obs_normalizer,
+                                proprio_prefix=mini.get("proprio_prefix"),
+                                proprio_prefix_valid=mini.get("proprio_prefix_valid"),
                             )
                         else:
                             valid_frames = torch.zeros_like(mini["fresh"])
@@ -211,8 +235,15 @@ def main() -> None:
                         train.jepa_target_mode, train.condition_source,
                     )
                     source_ema = ema_context[:-horizon_steps]
-                    pred = model.predict(source, condition, mini["policy"][:-horizon_steps],
-                                         teacher.actor.obs_normalizer)
+                    source_policy, source_valid = mini["policy"][:-horizon_steps], None
+                    if proprio_history is not None and train.method != "gru_copy":
+                        windows, valids = proprio_windows(
+                            mini["policy"], mini_resets,
+                            mini["proprio_prefix"], mini["proprio_prefix_valid"],
+                        )
+                        source_policy, source_valid = windows[:-horizon_steps], valids[:-horizon_steps]
+                    pred = model.predict(source, condition, source_policy,
+                                         teacher.actor.obs_normalizer, source_valid)
                     jepa_loss, copy_loss, copy_online_loss, target_var, online_context_var, floor_frac = normalized_jepa_with_copy(
                         pred, source, source_ema, target, mini_mask,
                         train.jepa_variance_floor,

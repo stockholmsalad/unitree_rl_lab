@@ -1,5 +1,7 @@
 """Phase 3 Current teacher 증류의 수치·방법 설정."""
 
+import warnings
+
 from isaaclab.utils import configclass
 
 
@@ -42,6 +44,7 @@ class StudentTrainCfg:
     proprio_input: bool = False
     proprio_dim: int = 45
     proprio_hidden_dims: tuple[int, ...] = (64, 64)
+    proprio_window: int = 5
     cnn_channels: tuple[int, ...] = (16, 32, 64)
     cnn_kernels: tuple[int, ...] = (5, 3, 3)
     cnn_strides: tuple[int, ...] = (2, 2, 2)
@@ -70,6 +73,10 @@ class StudentTrainCfg:
         if self.proprio_input and (self.proprio_dim != 45 or not self.proprio_hidden_dims or
                                    any(width < 1 for width in self.proprio_hidden_dims)):
             raise ValueError("policy 관측은 45차원이고 proprio MLP 층은 양수여야 한다")
+        if self.proprio_window < 1:
+            raise ValueError("proprio_window는 1 이상이어야 한다")
+        if self.proprio_input and self.proprio_window != depth_period_steps:
+            warnings.warn("proprio_window와 depth_period_steps가 다르다; 설정을 유지한다", stacklevel=2)
         horizon_steps = round(self.jepa_horizon_s / control_dt)
         if abs(horizon_steps * control_dt - self.jepa_horizon_s) > 1.0e-6 or horizon_steps % depth_period_steps:
             raise ValueError("JEPA horizon은 depth 주기의 정수배여야 한다")
