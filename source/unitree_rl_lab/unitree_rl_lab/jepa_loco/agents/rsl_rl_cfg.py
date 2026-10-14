@@ -109,6 +109,11 @@ class OracleCurrentPPORunnerCfg(DepthGRUPPORunnerCfg):
 
 
 @configclass
+class OracleCurrentTightTrackPPORunnerCfg(OracleCurrentPPORunnerCfg):
+    experiment_name = "jepa_loco_oracle_current_tighttrack"
+
+
+@configclass
 class OracleWidePPORunnerCfg(OracleCurrentPPORunnerCfg):
     experiment_name = "jepa_loco_oracle_wide"
     obs_groups = {"actor": ["policy", "terrain_wide"], "critic": ["critic"]}

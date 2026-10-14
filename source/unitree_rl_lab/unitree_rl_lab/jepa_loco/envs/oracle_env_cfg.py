@@ -45,6 +45,13 @@ class OracleProgressCfg:
 
 
 @configclass
+class OracleTrackingCfg:
+    lin_vel_std: float = 0.5
+    stop_command_threshold_mps: float = 0.3
+    stop_body_speed_threshold_mps: float = 0.1
+
+
+@configclass
 class OracleObservationsCfg(BlindObservationsCfg):
     @configclass
     class TerrainCurrentCfg(ObsGroup):
@@ -121,6 +128,7 @@ class OracleCurrentRewardsCfg(JepaRewardsCfg):
 
 
 def configure_current_rewards(cfg):
+    cfg.rewards.track_lin_vel_xy.params["std"] = cfg.tracking.lin_vel_std
     swing = cfg.rewards.swing_foot_clearance
     swing.weight = cfg.swing_clearance.weight
     for key in ("target_clearance", "foot_radius", "radius", "contact_threshold",
@@ -148,6 +156,7 @@ class OracleCurrentEnvCfg(JepaBlindEnvCfg):
     progress: OracleProgressCfg = OracleProgressCfg()
     swing_clearance: OracleSwingClearanceCfg = OracleSwingClearanceCfg()
     nominal_pose: OracleNominalPoseCfg = OracleNominalPoseCfg()
+    tracking: OracleTrackingCfg = OracleTrackingCfg()
     terrain_column_assignment_eps: float = 0.001
 
     def __post_init__(self):
@@ -166,6 +175,7 @@ class OracleCurrentEnvCfg_PLAY(JepaBlindEnvCfg_PLAY):
     progress: OracleProgressCfg = OracleProgressCfg()
     swing_clearance: OracleSwingClearanceCfg = OracleSwingClearanceCfg()
     nominal_pose: OracleNominalPoseCfg = OracleNominalPoseCfg()
+    tracking: OracleTrackingCfg = OracleTrackingCfg()
     terrain_column_assignment_eps: float = 0.001
 
     def __post_init__(self):
@@ -192,6 +202,16 @@ class OracleCurrentEasyStartEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         configure_easy_start_play(self)
+
+
+@configclass
+class OracleCurrentEasyStartTightTrackEnvCfg(OracleCurrentEasyStartEnvCfg):
+    tracking: OracleTrackingCfg = OracleTrackingCfg(lin_vel_std=0.25)
+
+
+@configclass
+class OracleCurrentEasyStartTightTrackEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg_PLAY):
+    tracking: OracleTrackingCfg = OracleTrackingCfg(lin_vel_std=0.25)
 
 
 def configure_easy_start_play(cfg):
