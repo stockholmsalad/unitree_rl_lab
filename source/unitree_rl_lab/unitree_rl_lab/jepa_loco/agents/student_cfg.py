@@ -39,6 +39,9 @@ class StudentTrainCfg:
     terrain_dim: int = 32
     terrain_hidden_dim: int = 128
     predictor_hidden_dim: int = 128
+    proprio_input: bool = False
+    proprio_dim: int = 45
+    proprio_hidden_dims: tuple[int, ...] = (64, 64)
     cnn_channels: tuple[int, ...] = (16, 32, 64)
     cnn_kernels: tuple[int, ...] = (5, 3, 3)
     cnn_strides: tuple[int, ...] = (2, 2, 2)
@@ -64,6 +67,9 @@ class StudentTrainCfg:
             raise ValueError("JEPA 목표 시점이 올바르지 않다")
         if self.condition_source not in ("command", "realized_displacement"):
             raise ValueError("JEPA predictor 조건이 올바르지 않다")
+        if self.proprio_input and (self.proprio_dim != 45 or not self.proprio_hidden_dims or
+                                   any(width < 1 for width in self.proprio_hidden_dims)):
+            raise ValueError("policy 관측은 45차원이고 proprio MLP 층은 양수여야 한다")
         horizon_steps = round(self.jepa_horizon_s / control_dt)
         if abs(horizon_steps * control_dt - self.jepa_horizon_s) > 1.0e-6 or horizon_steps % depth_period_steps:
             raise ValueError("JEPA horizon은 depth 주기의 정수배여야 한다")

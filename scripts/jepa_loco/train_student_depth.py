@@ -25,6 +25,8 @@ parser.add_argument("--jepa_target", choices=("context", "frame_embedding"))
 parser.add_argument("--lambda_j", type=float)
 parser.add_argument("--jepa_warmup_iterations", type=int)
 parser.add_argument("--jepa_variance_floor", type=float)
+parser.add_argument("--proprio_input", action="store_true")
+parser.add_argument("--proprio_hidden_dims", type=int, nargs="+", default=None)
 parser.add_argument("--no_init_at_random_ep_len", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -58,6 +60,10 @@ def main() -> None:
                  if (value := getattr(args, key)) is not None}
     if args.no_init_at_random_ep_len:
         overrides["init_at_random_ep_len"] = False
+    if args.proprio_input:
+        overrides["proprio_input"] = True
+    if args.proprio_hidden_dims is not None:
+        overrides["proprio_hidden_dims"] = tuple(args.proprio_hidden_dims)
     train = StudentTrainCfg(method=args.method, num_envs=args.num_envs,
                             max_iterations=args.max_iterations, **overrides)
     task = "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
@@ -85,6 +91,8 @@ def main() -> None:
         terrain_hidden_dim=train.terrain_hidden_dim, predictor_hidden_dim=train.predictor_hidden_dim,
         cnn_channels=train.cnn_channels, cnn_kernels=train.cnn_kernels,
         cnn_strides=train.cnn_strides,
+        proprio_input=train.proprio_input, proprio_dim=train.proprio_dim,
+        proprio_hidden_dims=train.proprio_hidden_dims,
     ).to(device)
     optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad),
                                  lr=train.learning_rate)
@@ -114,8 +122,12 @@ def main() -> None:
         with torch.inference_mode():
             for _ in range(train.rollout_steps):
                 fresh = obs["depth_fresh"][:, 0] > 0.5
-                context, state = model.encode_step(obs["depth"], fresh, state)
-                _, ema_state = model.encode_step(obs["depth"], fresh, ema_state, target=True)
+                context, state = model.encode_step(obs["depth"], fresh, state,
+                                                   proprio=obs["policy"],
+                                                   proprio_normalizer=teacher.actor.obs_normalizer)
+                _, ema_state = model.encode_step(obs["depth"], fresh, ema_state, target=True,
+                                                  proprio=obs["policy"],
+                                                  proprio_normalizer=teacher.actor.obs_normalizer)
                 student_z = model.terrain_latent(context)
                 teacher_z = teacher.terrain_latent(obs["terrain_current"])
                 student_action = teacher.action_from_latent(obs["policy"], student_z)
@@ -165,7 +177,10 @@ def main() -> None:
                 mini, mini_resets, mini_h0, mini_h0_ema, mini_mask = select_env_batch(
                     batch, resets, h0, h0_ema, ids, mask_all,
                 )
-                context, _ = model.encode_sequence(mini["depth"], mini["fresh"], mini_resets, mini_h0)
+                context, _ = model.encode_sequence(
+                    mini["depth"], mini["fresh"], mini_resets, mini_h0,
+                    proprio=mini["policy"], proprio_normalizer=teacher.actor.obs_normalizer,
+                )
                 student_z = model.terrain_latent(context)
                 student_action = teacher.action_from_latent(mini["policy"], student_z)
                 latent_loss, action_loss = distillation_losses(
@@ -182,6 +197,7 @@ def main() -> None:
                         if train.jepa_target == "context":
                             ema_context, _ = model.encode_sequence(
                                 mini["depth"], mini["fresh"], mini_resets, mini_h0_ema, target=True,
+                                proprio=mini["policy"], proprio_normalizer=teacher.actor.obs_normalizer,
                             )
                         else:
                             valid_frames = torch.zeros_like(mini["fresh"])
@@ -195,7 +211,8 @@ def main() -> None:
                         train.jepa_target_mode, train.condition_source,
                     )
                     source_ema = ema_context[:-horizon_steps]
-                    pred = model.predict(source, condition)
+                    pred = model.predict(source, condition, mini["policy"][:-horizon_steps],
+                                         teacher.actor.obs_normalizer)
                     jepa_loss, copy_loss, copy_online_loss, target_var, online_context_var, floor_frac = normalized_jepa_with_copy(
                         pred, source, source_ema, target, mini_mask,
                         train.jepa_variance_floor,
