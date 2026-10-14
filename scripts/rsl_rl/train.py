@@ -39,6 +39,9 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, choices=tasks, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--save_interval", type=int, default=None, help="Checkpoint interval in learning iterations.")
+parser.add_argument("--resume_checkpoint_path", type=str, default=None,
+                    help="Direct checkpoint path for --resume, including a different experiment folder.")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -48,6 +51,8 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 argcomplete.autocomplete(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.resume_checkpoint_path is not None and not args_cli.resume:
+    parser.error("--resume_checkpoint_path requires --resume")
 
 # always enable cameras to record video
 if args_cli.video:
@@ -133,6 +138,10 @@ def main(
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     ) #origin
+    if args_cli.save_interval is not None:
+        if args_cli.save_interval < 1:
+            raise ValueError("--save_interval must be positive")
+        agent_cfg.save_interval = args_cli.save_interval
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -170,7 +179,12 @@ def main(
 
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+        if args_cli.resume_checkpoint_path is not None:
+            resume_path = str(pathlib.Path(args_cli.resume_checkpoint_path).expanduser().resolve())
+            if not os.path.isfile(resume_path):
+                raise FileNotFoundError(resume_path)
+        else:
+            resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
     if args_cli.video:
@@ -200,8 +214,15 @@ def main(
             # iteration 기반 스케줄(jepa_loco 명령 범위 등)이 0 부터 다시 시작하지 않도록 전역 스텝 복원
             from unitree_rl_lab.jepa_loco.agents.checks import restore_global_step
 
-            step = restore_global_step(env.unwrapped, runner.current_learning_iteration, agent_cfg.num_steps_per_env)
-            print(f"[INFO] resume: common_step_counter = {step} (iteration {runner.current_learning_iteration})", flush=True)
+            checkpoint_iteration = runner.current_learning_iteration
+            step = restore_global_step(env.unwrapped, checkpoint_iteration, agent_cfg.num_steps_per_env)
+            # RSL-RL 5.0.1은 load한 iteration부터 다시 반복한다. 직접 경로 resume에서는
+            # 저장된 iteration 다음부터 시작해 17000 + 3000 update => model_20000.pt로 맞춘다.
+            # 기존 --load_run/--checkpoint resume 동작은 그대로 둔다.
+            if args_cli.resume_checkpoint_path is not None:
+                runner.current_learning_iteration = checkpoint_iteration + 1
+            print(f"[INFO] resume: common_step_counter = {step} (checkpoint iteration {checkpoint_iteration}, "
+                  f"next iteration {runner.current_learning_iteration})", flush=True)
             # env 는 load 전에 counter 0 으로 reset 되어 명령이 초기 범위로 뽑혀 있다 → 복원된 스텝으로 재샘플
             # (IsaacLab 0.54.4 의 reset(None) 은 slice 에 len() 을 호출해 실패 → env id 를 명시)
             if hasattr(env.unwrapped, "command_manager"):
