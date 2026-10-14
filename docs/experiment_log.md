@@ -12,6 +12,23 @@
 
 **사전 판정 규칙:** 동일 checkpoint 18000/18500/19000/19500/20000을 고정 평가(seed 43, 높이당 128 env)에서 오르기 9~15 cm, 내리기 15~20 cm, 비정형 6/8/10/12 cm로 비교한다. 평지 성공률도 별도 확인한다. 채택하려면 오르기 14·15 cm와 내리기 19·20 cm 성공률이 std=0.5 대조군 같은 checkpoint 평균보다 모두 높고, timeout 감소에서 개선이 나오며 낙상은 각 높이에서 17000보다 5%p 이상 증가하지 않아야 한다. 비정형 10·12 cm 성공률 및 속도 오차는 17000보다 각각 5%p·20% 이상 악화되지 않아야 하고 평지는 100%여야 한다. 상위 checkpoint는 seed 44로 재평가하고 사용자가 play 영상에서 보행을 확인한다. 만족하지 못하면 17000을 유지하고 음성 결과로 기록한다. **현재 teacher 교체 결정은 하지 않았다.**
 
+## 2026-10-14 — Student 고유수용감각 B안: 프레임 사이 5스텝 요약
+
+사용자 결정으로 기존 A안(새 depth 프레임 시점의 고유수용감각 1개만 사용)을 B안으로 확장했다. `--proprio_input`은 계속 기본 꺼짐이고, 켜면 `proprio_window=5`가 기본이다. 최근 K개의 원시 `obs["policy"]`를 오래된 것→최신 순으로 유지한다. 각 유효 스텝은 고정 teacher 정규화기와 공유 ELU MLP(45→64→64)를 거친다. 에피소드 전 padding의 원시값·임베딩은 0, valid는 0이며, K개 임베딩과 K개 valid를 `[K×64+K]`로 이어 Linear→ELU로 64차원 `p̄_t`를 만든다. `K=1`은 요약 Linear가 없는 기존 A안 경로이고, window 키가 없는 `proprio_input=True` checkpoint도 K=1로 읽는다. K<1은 오류다. K가 depth 주기와 다르면 경고만 한다.
+
+Rollout 수집에서는 env별 원시 policy와 valid의 최근 K−1개를 유지하고, done에서 해당 env만 비운다. Rollout 시작 prefix `[K−1,N,45]`와 valid를 저장해 env 미니배치와 함께 자른다. 업데이트의 `encode_sequence`는 이 prefix·rollout 관측·중간 reset으로 매 스텝 창을 재구성한다. EMA context target도 같은 prefix를 사용한다. Predictor는 source 시점에서 끝나는 창을 사용한다. `frame_embedding` EMA CNN 경로와 고정 teacher 정책 head의 현재 proprio 입력은 그대로다.
+
+**검증:** Isaac 앱 내부 전체 테스트 **159개 통과**. K=1 A안과 state_dict·출력의 bitwise 동치, 네 방법의 online·EMA 두 rollout 연속성·중간 reset, 창 순서·mask, prefix env 미니배치 슬라이스, fresh gate, MLP·요약 Linear 기울기와 EMA, 새/구 checkpoint 추론 버퍼를 확인했다. Z790에서 동일 teacher 17000과 고정 latent 통계로 네 방법 각각 256 env·20 iteration 스모크를 완료했다. 원본 통계의 pilab 절대경로만 로컬 teacher 경로에 맞춘 `/tmp` 사본을 사용하고 평균·표준편차 값은 유지했다. 네 run의 20개 손실 로그는 모두 유한했고, 첫 iteration 대비 마지막 iteration의 latent 손실은 감소했다.
+
+| 방법 | B안 latent 손실 처음→끝 | B안 JEPA 손실 처음→끝 | 시간/iter A→B | 최대 PyTorch 할당 A→B |
+|---|---:|---:|---:|---:|
+| no_memory | 222.91→1.96 | 없음 | 5.92→6.03 s | 2.32→2.32 GiB |
+| GRU | 211.01→2.30 | 없음 | 6.06→6.21 s | 2.32→2.32 GiB |
+| GRU+JEPA, floor 0.05 | 211.01→2.12 | 0.432→0.027 | 6.22→6.41 s | 2.33→2.34 GiB |
+| GRU+copy, floor 0.05 | 211.01→2.09 | 2.546→0.936 | 6.21→6.41 s | 2.33→2.33 GiB |
+
+시간은 마지막 10 iteration의 중앙값이며 PyTorch 할당만 측정한다(renderer 포함 전체 VRAM은 아님). K=5의 Z790 256 env 추가 시간은 A안 대비 약 0.11~0.20 s/iter였다. 짧은 스모크 수치로 보행·기억 성능의 우열을 주장하지 않는다. 저장된 GRU K=5 `model_20.pt`의 `student_cfg.proprio_window=5`와 요약 계층을 확인했고, 공통 `eval_student_fixed.py`의 9 cm·2 env·20 step 재생이 JSON을 생성했다. 이 재생은 성공률 평가가 아니다. 임시 checkpoint 폴더는 확인 후 삭제했다. 본 학습은 실행하지 않았다.
+
 ## 2026-10-14 — Phase 3 student 고유수용감각 입력 옵션
 
 처음 구조도와 CLAUDE.md §4의 `P(h_t,p_t,c_t,Δ)`에는 고유수용감각 인코더가 있으나 기존 student는 Depth만 기억하고 predictor에는 context와 명령만 넣었다. 사각지대 지형의 상대 위치를 추적할 때 이동·발 접촉의 이력이 필요할 수 있다는 가설을 검증하도록 `--proprio_input` 옵션을 추가했다. 기본값은 **꺼짐**이다. 원시 `obs["policy"]` 45차원을 고정 teacher의 `actor.obs_normalizer`로 정규화한 뒤 ELU MLP(기본 45→64→64, 층 크기 CLI/config 설정)로 임베딩한다. 새 depth 프레임이 들어온 스텝에만 GRU 입력 `[f_t,p_t]` 또는 no-memory projection 입력 `[f_t,p_t]`를 갱신하고, 프레임 사이에는 표현을 유지한다. JEPA predictor에는 `[h_t,p_t,command|realized_displacement]`를 넣는다. `gru_copy` predictor는 항등을 유지한다. EMA는 proprio MLP도 각 optimizer step 뒤 갱신하고 target 시점의 실제 policy 관측을 받는다. `frame_embedding`의 EMA CNN target 경로는 바꾸지 않았다.

@@ -148,11 +148,23 @@ predictor도 context와 명령 3차원만 받았다. 이동·발 접촉 이력�
    따라서 고유수용감각의 과거는 backbone에 저장한다. 나중에 Mamba backbone도
    동일한 결합 입력을 쓴다.
 
-**A안 갱신:** backbone과 no-memory projection은 10 Hz의 `depth_fresh` 스텝에서만
-그 시점 `p_t`를 받고, 프레임 사이에는 context를 유지한다. 사이 5스텝의
-고유수용감각을 요약하는 B안은 후속 후보로만 둔다. EMA target encoder는
-고유수용감각 MLP도 이동평균 사본으로 갖고 실제 target 시점의 policy 관측을
-정규화해 받는다. `frame_embedding` target은 기존 EMA CNN 경로를 유지한다.
+**2026-10-14 사용자 결정 — B안 채택:** `--proprio_input`은 계속 기본 꺼짐이다.
+켜면 최근 K개 50 Hz 제어 스텝의 원시 policy 관측을 오래된 것부터 최신 순으로
+모아 각 스텝을 공유 teacher 정규화기·고유수용감각 MLP에 통과시킨다.
+임베딩 K개와 각 스텝의 valid mask K개를 이어 Linear→ELU로 64차원
+`p̄_t`를 만든다. 기본 `proprio_window=5`(depth 주기)이며 K=1이면
+요약 Linear를 만들지 않아 기존 A안을 비트 단위로 재현한다. K<1은 오류,
+depth 주기와 다른 K는 경고 후 허용한다. 에피소드 이전 값은 원시값과
+임베딩 모두 0, valid=0으로 채운다. reset 직후 첫 값만 valid=1이다.
+
+GRU·no-memory projection은 여전히 `depth_fresh`에서만 `p̄_t`를 받아
+갱신하고 프레임 사이에는 context를 유지한다. JEPA predictor는 시작 시점
+window를 받는다. 수집과 업데이트가 같은 창을 보도록 rollout 시작의
+`[K−1,N,45]` prefix와 valid를 저장하고 env 미니배치와 함께 자른다.
+중간 reset에서는 이전 에피소드 prefix를 비운다. EMA target은 스텝별
+MLP와 요약 Linear 모두 이동평균 사본을 갖고 target 시점에서 끝나는
+실제 policy window를 받는다. `frame_embedding` target은 기존 EMA CNN
+경로를 유지한다. 추론에서도 env별 window를 유지하고 done에서 초기화한다.
 
 초기 그림과 다른 부분: 정책은 고정 teacher head에 `[proprio,ẑ_current]`를
 입력한다. Phase 2의 Depth PPO가 9 cm 첫 단을 넘지 못했고 predictor 출력은
