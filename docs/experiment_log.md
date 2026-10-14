@@ -1,5 +1,17 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-14 — Teacher v2 선속도 추종 std 단일 변수 실험 준비
+
+**배경·가설:** 고정 teacher `Current-EasyStart s42 model_17000.pt`의 seed 43·높이당 128 env·0.6 m/s 평가에서 오르기 14/15 cm 성공률은 69.5/43.8%, 내리기 19/20 cm는 29.7/4.7%다. 대부분 첫 단 또는 내리막 앞 x≈1.0 m에서 20 s 정지해 timeout되고 낙상은 0~1개였다. 정지 student의 첫 단 근처 teacher 행동 L2 오차도 0.09~0.13이다. 선속도 추종 커널 `1.5 exp(-||v_cmd-v_body||²/std²)`은 std=0.5에서 0.6 m/s 명령을 무시하고 정지해도 최대치의 `exp(-0.36/0.25)=23.7%`를 준다. std=0.25에서는 `exp(-0.36/0.0625)=0.315%`다. 정지 국소 해가 줄어드는지 **한 변수만** 시험한다.
+
+**구현:** `OracleTrackingCfg.lin_vel_std` 기본값은 0.5로 유지하고, 새 `Unitree-Go2-JepaLoco-OracleCurrent-EasyStart-TightTrack`과 PLAY 설정만 0.25를 사용한다. 기존 EasyStart 보상·가중치·각속도 std·지형·명령·커리큘럼·관측·PPO 구조는 유지한다. 신규 PPO cfg의 차이는 experiment 이름뿐이다. 두 run 공통으로 지형 종류별 종료 에피소드의 `track_lin_vel_xy` 보상 합 평균, 몸통 좌표계 xy 속도 L2 오차의 에피소드 평균, 명령 xy 속도 >0.3 m/s인데 몸통 속도 <0.1 m/s인 제어 스텝 비율을 기록한다. 끝난 env의 마지막 스텝은 reset 직전에 누적하고, 살아 있는 env는 일반 step에서 누적해 중복을 피한다. 기존 레벨별 첫 단 통과율·종료 사유 로그는 유지한다.
+
+**Resume 확인:** RSL-RL 5.0.1의 기본 `load()`는 actor·critic·optimizer·iteration을 모두 읽는다. `train.py --resume_checkpoint_path`를 추가해 서로 다른 experiment 폴더의 파일을 직접 읽는다. 기존 `--load_run` resume는 그대로 둔다. 직접 경로 resume는 `model_17000.pt`를 읽은 뒤 첫 새 학습 iteration을 17001로 설정해 3000회 업데이트 뒤 `model_20000.pt`를 만든다. 명령 스케줄용 `common_step_counter`는 사용자 지정 기존 규칙 `17000×100=1,700,000`으로 복원하고 명령을 다시 샘플한다. `--save_interval 500`은 두 run에 같은 체크포인트 간격을 적용한다. 본 학습은 seed 42·2048 env·두 조건 각 3000 iteration으로 계획했고 **실행하지 않았다**. pilab의 기존 단독 처리량 12.3~13 s/iteration을 적용하면 조건당 약 10.3~10.8 h이며, 두 run 동시 실행 시 GPU 경합 시간은 별도 관찰이 필요하다.
+
+**검증:** Isaac 앱 전체 테스트 **122개 통과**. 기본/TightTrack 보상 cfg는 선속도 std(0.5/0.25) 외 동일하고, PPO cfg는 experiment 이름 외 동일하다. 순수 함수 테스트는 몸통 좌표 명령·속도로 정지 비율 임계값을 확인한다. Z790의 로컬 `teacher_cont_s42/model_17000.pt`(actor·critic·optimizer·iter 포함)에서 두 task를 각각 64 env·5 iteration resume 스모크했다. 두 run 모두 `common_step_counter=1,700,000`, 다음 iteration 17001, 최종 `model_17005.pt` 저장과 새 지형별 진단 키를 확인했다. 저장된 env 설정에서도 선속도 std 0.25/0.5와 각속도 std 0.5를 확인했다. 64 env 스모크의 보상 수치를 성능 결과로 해석하지 않는다.
+
+**사전 판정 규칙:** 동일 checkpoint 18000/18500/19000/19500/20000을 고정 평가(seed 43, 높이당 128 env)에서 오르기 9~15 cm, 내리기 15~20 cm, 비정형 6/8/10/12 cm로 비교한다. 평지 성공률도 별도 확인한다. 채택하려면 오르기 14·15 cm와 내리기 19·20 cm 성공률이 std=0.5 대조군 같은 checkpoint 평균보다 모두 높고, timeout 감소에서 개선이 나오며 낙상은 각 높이에서 17000보다 5%p 이상 증가하지 않아야 한다. 비정형 10·12 cm 성공률 및 속도 오차는 17000보다 각각 5%p·20% 이상 악화되지 않아야 하고 평지는 100%여야 한다. 상위 checkpoint는 seed 44로 재평가하고 사용자가 play 영상에서 보행을 확인한다. 만족하지 못하면 17000을 유지하고 음성 결과로 기록한다. **현재 teacher 교체 결정은 하지 않았다.**
+
 ## 2026-10-13 — Phase 3 JEPA 분산 하한 CLI·진단
 
 사용자 관찰: pilab에서 teacher를 `model_17000.pt`로 바꾼 GRU+JEPA seed 43 런의 iteration 300에서 EMA context target 분산 평균이 0.0017(원고 런 0.115)로 줄고, 진단 copy 손실 2021, latent 손실 2.46(GRU 대조군 0.90)이 나왔다. 정규화 분모가 너무 작아지는지를 확인·제어하도록 `train_student_depth.py`에 `--jepa_variance_floor`를 추가했다. `StudentTrainCfg` 기본값 **1e-6은 유지**하여 기존 실행을 재현할 수 있게 했다.

@@ -98,6 +98,36 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
 - **세부 판정 규칙:** 내려가는 계단·비정형 지형의 판정 규칙과 단계 값은 구현 시
   `docs/experiment_log.md`에 기록한다.
 
+### 2026-10-14 teacher v2 추종 std 단일 변수 실험
+
+고정 teacher `Current-EasyStart s42 model_17000.pt`의 고정 평가(seed 43, 높이당 128 env,
+0.6 m/s)에서 오르기 14/15 cm 성공률은 69.5/43.8%, 내리기 19/20 cm는
+29.7/4.7%였다. 실패는 첫 단/내리막 앞 x≈1.0 m의 정지(time_out)이며 낙상은
+0~1개다. 정지한 student의 첫 단 근처 teacher 행동 오차도 0.09~0.13으로 작다.
+가설은 선속도 추종 보상 `1.5 exp(-||v_cmd-v_body||²/std²)`의 std=0.5가
+0.6 m/s 명령에서 정지해도 최대치의 약 24%를 지급한다는 것이다.
+
+- 기존 `OracleCurrent-EasyStart`의 std=0.5와 나머지 설정은 유지한다.
+  신규 `OracleCurrent-EasyStart-TightTrack`만 std=0.25로 둔다(정지 시 약 0.3%).
+  다른 보상·지형·명령·커리큘럼·PPO 및 네트워크는 동일하다.
+- seed 42, 2048 env로 두 조건 모두 **같은 `model_17000.pt`의 actor·critic·optimizer**에서
+  3000 iteration 이어 학습한다. 직접 checkpoint 경로 resume는 저장 iteration 다음인
+  17001부터 20000까지 수행하고, 명령 스케줄 전역 스텝은 기존 규칙대로
+  `17000×100`에서 복원한다. 500 iteration마다 저장한다. 두 run은 student 학습 뒤
+  pilab에서 동시에 시작한다.
+- 두 조건 공통 진단: 지형 종류별 종료 에피소드의 `track_lin_vel_xy` 보상 합 평균,
+  몸통 좌표계 xy 속도 오차의 에피소드 평균, 명령 xy 속도 >0.3 m/s이고 몸통 xy 속도
+  <0.1 m/s인 제어 스텝의 비율. 기존 레벨별 통과율·종료 원인 진단도 유지한다.
+- **평가를 보고 teacher를 교체할지 결정한다.** 기존 평가 task로 18000/18500/
+  19000/19500/20000 checkpoint를 오르기 9~15 cm, 내리기 15~20 cm, 비정형
+  6/8/10/12 cm에서 seed 43·높이당 128 env로 비교한다. TightTrack 채택에는
+  (1) 오르기 14·15 cm와 내리기 19·20 cm 성공률이 같은 checkpoint의 std=0.5
+  대조군 평균보다 모두 높고, (2) 정지 timeout이 줄되 높이별 낙상이 17000보다
+  5%p 이상 증가하지 않고, (3) 비정형 10·12 cm 성공률과 속도 오차가 17000보다
+  각각 5%p·20% 이상 악화되지 않으며 평지 성공률 100%, (4) 상위 checkpoint의
+  seed 44 재평가와 사용자 play 영상 정상 보행 확인이 모두 필요하다. 실패하면
+  `model_17000.pt`를 유지하고 음성 결과로 기록한다.
+
 ### 2026-10-13 졸업논문 고정 teacher 교체: model_17000
 
 사용자 결정: 졸업논문의 고정 teacher를 Current-EasyStart seed 42를 이어 학습한
