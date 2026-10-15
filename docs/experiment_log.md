@@ -1,5 +1,23 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-15 — Depth-only student의 FLA Mamba-1 시간축 backbone 준비
+
+사용자 결정: teacher 17000·student seed 43의 checkpoint 2500/2800/3000 고정 평가 평균에서 오르기 14/15 cm 성공률은 GRU 증류만 61.3/29.8%, GRU+TC 51.2/3.8%, GRU+JEPA 39.7/6.2%, no_memory 3.4/0.1%였다. 다음 비교는 같은 teacher 17000과 같은 depth-only 증류 조건에서 GRU 자리만 Mamba로 바꾼다. 이 수치는 현재 비교군의 결과이며 Mamba 성능에 대한 사전 주장은 하지 않는다.
+
+`mamba-ssm` 계획 대신 FLA 0.5.2의 Mamba-1 모듈을 사용한다. `fla-core==0.5.2`도 필요하며 두 wheel을 `--no-deps`로 설치해 IsaacLab의 torch 버전을 보존한다. 블록은 입력 차원이 128과 다를 때만 Linear로 맞추고 `u + Mamba(RMSNorm(u)) → RMSNorm`으로 구성했다. hidden 128, intermediate 256, SSM state 16, conv kernel 4, dt_rank auto이며 모두 student config에서 노출한다. FLA mixer 116,480개, 기존 GRU 99,072개 파라미터다. 평탄 상태 5248차원은 마지막 출력 128, convolution 상태 1024, SSM 상태 4096을 이어 붙인다. 새 depth 프레임에서만 갱신하고 에피소드 reset에서 해당 env 상태만 0으로 만든다. `Mamba.slow_forward`의 1토큰 cached decode를 직접 호출해 선택적 CUDA 경로를 피하며, 순환 state의 역전파는 끊지 않는다. 기본 `backbone=gru`와 오래된 checkpoint의 기본 해석도 GRU다. 첫 본 학습은 고유수용감각 입력을 끈다.
+
+
+**검증:** Isaac 앱 내부 전체 테스트 **164개 통과**. 독립 Mamba-1 순환 수식과 5스텝 출력·최종 상태가 fp32에서 1e-5 이내로 일치했다. 10스텝 gated 역전파에서 첫 입력과 mixer의 모든 파라미터에 기울기가 도달했다. reset과 두 rollout의 수집·업데이트 일치, EMA 갱신·동결, 기존 backbone 키 없는 checkpoint, 새 Mamba checkpoint 추론과 env별 reset을 확인했다. 명시적인 GRU와 기본 GRU의 state_dict·forward·손실은 비트 단위로 같았다.
+
+Z790 `env_test`에서 같은 teacher 17000·통계·seed 43·depth-only 증류로 각 256 env×20 iteration 스모크를 완료했다. 로컬 통계 사본은 teacher 경로만 Z790 파일로 맞추고 평균·표준편차 값은 유지했다. 20개 손실 모두 유한하며 첫 iteration보다 20번째가 작다. 시간은 마지막 10 iteration 중앙값이고 GPU 수치는 PyTorch 최대 할당량이라 renderer 전체 VRAM은 포함하지 않는다.
+
+| Backbone | latent 손실 처음→끝 | 시간/iter | 최대 PyTorch 할당 |
+|---|---:|---:|---:|
+| GRU | 197.54→1.85 | 6.18 s | 2.32 GiB |
+| Mamba | 107.91→2.13 | 7.56 s | 3.14 GiB |
+
+Mamba의 iteration 시간은 이 로컬 스모크에서 GRU보다 약 **22% 길다**. 256 env 단일 토큰 microbenchmark에서 GRU gated step은 약 0.032 ms, Mamba gated step은 약 0.442 ms였고 그중 FLA `slow_forward`만 약 0.322 ms였다. 즉 순수 PyTorch의 convolution·SSM 상태 갱신과 여러 작은 연산이 주요 추가 비용이며, 코드에서는 50 Hz 제어 스텝마다 후보 상태를 계산한 뒤 `depth_fresh`로 상태만 gate한다. 이번에는 성능 최적화를 하지 않았다. pilab 2048 env의 실제 iteration 시간·VRAM은 아직 측정하지 않았으므로 Z790 256 env 값을 그대로 외삽하지 않는다. 본 학습 명령은 제공하되 실행하지 않는다.
+
 ## 2026-10-14 — Teacher v2 선속도 추종 std 단일 변수 실험 준비
 
 **배경·가설:** 고정 teacher `Current-EasyStart s42 model_17000.pt`의 seed 43·높이당 128 env·0.6 m/s 평가에서 오르기 14/15 cm 성공률은 69.5/43.8%, 내리기 19/20 cm는 29.7/4.7%다. 대부분 첫 단 또는 내리막 앞 x≈1.0 m에서 20 s 정지해 timeout되고 낙상은 0~1개였다. 정지 student의 첫 단 근처 teacher 행동 L2 오차도 0.09~0.13이다. 선속도 추종 커널 `1.5 exp(-||v_cmd-v_body||²/std²)`은 std=0.5에서 0.6 m/s 명령을 무시하고 정지해도 최대치의 `exp(-0.36/0.25)=23.7%`를 준다. std=0.25에서는 `exp(-0.36/0.0625)=0.315%`다. 정지 국소 해가 줄어드는지 **한 변수만** 시험한다.

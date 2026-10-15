@@ -19,7 +19,8 @@ terrain head와 그 증류 경로는 당시 설계 이력이며 **현재 기본 
 
 1. Depth 한 프레임을 기존 2채널 CNN에 통과시키고, 10 Hz 새 프레임에서만 갱신하는
    시간축 backbone으로 context `h_t`를 만든다. 기존 GRU는 기준선으로 유지하고 Mamba를
-   같은 CNN·입력·평가 조건에서 비교한다. 실제 Mamba 구현은 라이브러리 설치·CUDA 빌드 검증 후 진행한다.
+   같은 CNN·입력·평가 조건에서 비교한다. **2026-10-15 결정:** 첫 Mamba 비교는
+   depth-only 증류 `--method gru`의 시간축 backbone만 FLA Mamba-1로 바꾼다.
 2. **현재/미래 공유 terrain head** `g`를 두어 `z_current = g(h_t)`와
    `z_future = g(P(h_t, p_t, c_t, Δ))`를 얻는다. 초기는 벡터 입력 MLP predictor.
    이 설계에서 `c_t`는 현재 velocity command이며, 종전 K=8 primitive와 attention pooling은
@@ -394,6 +395,15 @@ Depth 시퀀스로부터 행동 조건부 미래 latent를 JEPA 방식으로 예
    - 프레임 스택 없음. depth 는 10 Hz 로 1장씩 CNN 에 넣고, backbone 은 새 프레임이 온 스텝에만 갱신한다(`depth_fresh` 게이트)
    - nominal context 2 s 는 truncated BPTT 길이로 보장: PPO rollout `num_steps_per_env = 100` 제어 스텝 = depth 20 프레임
    - **CNN 과 입력 형식은 GRU·Mamba 비교에서 동일하게 유지**한다 (시간축 backbone 만 교체). 8×8 패치 토큰 인코더는 이번 비교 범위에서 제외
+   - **2026-10-15 구현:** `flash-linear-attention==0.5.2`와 필수 `fla-core==0.5.2`의
+     `fla.layers.mamba.Mamba` 한 층을 쓴다. `mamba-ssm` CUDA kernel은 쓰지 않고
+     FLA `slow_forward`를 1토큰 순수 PyTorch decode로 직접 호출한다. 입력
+     `u = Linear(x)`(입력 128이면 항등), `y=u+Mamba(RMSNorm(u))`,
+     `z=RMSNorm(y)`다. hidden 128, intermediate 256, SSM state 16,
+     conv kernel 4, dt_rank auto. 상태는 `[z_last(128), conv(1024), ssm(4096)]`
+     총 5248차원이며 reset 시 0, depth 새 프레임에서만 갱신한다.
+     GRU는 99,072개, FLA mixer는 116,480개 파라미터다(전체 Mamba 블록
+     norm 포함 116,736개, 입력 128 기준). 기본 backbone은 GRU로 유지한다.
 3. **고유수용감각 인코더 (MLP)**: 각속도 3 + 중력 투영 3 + 속도 명령 3 + 관절 위치 12 + 관절 속도 12 + 이전 행동 12 = 45차원 → proprio 임베딩
 4. **Predictor** (backbone 교체 가능): `(z_t, proprio 임베딩, 조건 c, horizon embedding) → ẑ_{t+H}`
 5. **Target 인코더**: Context 인코더의 EMA 사본, stop-gradient. Context 인코더와 같은 2채널 입력. 출력 `z̄_{t+H}`
@@ -479,7 +489,11 @@ K개 후보는 실행할 행동이 아니라 **관측 인코더의 일부**다(I
 - **Phase 3 — JEPA 보조손실 (GRU, 온라인)**: Predictor + EMA Target 추가. 조건 c 계산 로직은 단위 테스트 필수(몸통 좌표계 변환, yaw wrap-around). 실현 변위 (Δx, Δy, Δyaw) 히스토그램을 지형별로 출력해 primitive 주변 샘플 공백 확인.
 - **Phase 4 — 반사실 평가 도구**: 지형별(비정형, 오르는 계단, 내려가는 계단, gap) 저장 상태 500개 × K개 primitive를 teacher로 H 동안 분기 실행 → (ẑ, z̄) 쌍 생성. 지표: retrieval top-1 정확도(우연 1/K), 예측/실제 거리 행렬 Spearman 상관, 조건 셔플 시 오차 증가량. 발 주변 heightmap linear probe(속도 구간별 보고: v ≥ 0.76 m/s는 현재 관측 기반, 미만은 메모리 기반 예견).
 - **Phase 5 — 후보 입력 정책**: K개 예측 latent attention pooling을 정책 입력으로. 비교군: (a) 예측기 없음, (b) 무조건부 latent 1개, (c) K개 조건부 latent. 지표: 지형별 성공률, 계단 모서리 발끝 충돌 횟수.
-- **Phase 6 — Mamba 교체**: `mamba-ssm` 설치(CUDA 빌드 확인). LocoMamba 공식 코드는 비공개이므로 논문 서술 기반으로 직접 구현. GRU 결과와 동일 조건 비교.
+- **Phase 6 — Mamba 교체 (2026-10-15 갱신)**: `mamba-ssm` 설치 계획을 대체한다.
+  `pip install flash-linear-attention==0.5.2 fla-core==0.5.2 --no-deps`로 설치하고
+  torch 2.7.0+cu128 버전이 보존되는지 확인한다. FLA Mamba-1의 순수 PyTorch
+  1토큰 경로를 사용한다. 첫 비교는 같은 teacher 17000, depth-only 증류,
+  같은 CNN·평가 조건의 GRU 대 Mamba다. `proprio_input`은 이 첫 run에서 끈다.
 - **Phase 7 — 학습 절차 비교**: 오프라인 사전학습 + freeze vs 온라인 보조손실.
 - **Phase 8 — 배포 준비**: Orin 기준 K ∈ {1, 4, 8, 16}별 추론 지연을 GRU / Transformer / Mamba로 측정. ONNX/TensorRT 내보내기.
 
