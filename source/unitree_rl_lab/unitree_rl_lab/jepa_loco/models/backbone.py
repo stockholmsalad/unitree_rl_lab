@@ -65,10 +65,57 @@ class GRUBackbone(SequenceBackbone):
         return h
 
 
-BACKBONES: dict[str, type[SequenceBackbone]] = {"gru": GRUBackbone}
+class MambaBackbone(SequenceBackbone):
+    """FLA Mamba-1 한 층. 평탄 상태는 [마지막 출력, convolution, SSM] 순서다."""
+
+    def __init__(self, in_dim: int, hidden_dim: int = 128, intermediate_size: int = 256,
+                 state_size: int = 16, conv_kernel: int = 4, dt_rank: int | str = "auto"):
+        super().__init__()
+        if min(in_dim, hidden_dim, intermediate_size, state_size, conv_kernel) < 1:
+            raise ValueError("Mamba 차원과 kernel 크기는 양수여야 한다")
+        from fla.layers.mamba import Mamba
+
+        self.in_dim = in_dim
+        self.out_dim = hidden_dim
+        self.intermediate_size = intermediate_size
+        self.state_size = state_size
+        self.conv_kernel = conv_kernel
+        self.state_dim = hidden_dim + intermediate_size * (conv_kernel + state_size)
+        self.input_projection = nn.Identity() if in_dim == hidden_dim else nn.Linear(in_dim, hidden_dim)
+        self.pre_norm = nn.RMSNorm(hidden_dim)
+        self.mixer = Mamba(hidden_size=hidden_dim, intermediate_size=intermediate_size,
+                           state_size=state_size, conv_kernel=conv_kernel, dt_rank=dt_rank, layer_idx=0)
+        self.post_norm = nn.RMSNorm(hidden_dim)
+
+    def step(self, x: torch.Tensor, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if h.shape != (x.shape[0], self.state_dim):
+            raise ValueError("Mamba 상태 shape가 입력 batch와 맞지 않는다")
+        _, conv, ssm = torch.split(
+            h, (self.out_dim, self.intermediate_size * self.conv_kernel,
+                self.intermediate_size * self.state_size), dim=-1,
+        )
+        conv = conv.reshape(-1, self.intermediate_size, self.conv_kernel)
+        ssm = ssm.reshape(-1, self.intermediate_size, self.state_size)
+        u = self.input_projection(x)
+        # FLA forward의 선택적 CUDA 커널 dispatch를 거치지 않는다. 첫 토큰도
+        # 0 상태를 넘겨 항상 slow_forward의 cached 1-token decode를 사용한다.
+        mixed, conv_new, ssm_new = self.mixer.slow_forward(
+            self.pre_norm(u).unsqueeze(1),
+            last_state={"conv_state": conv, "recurrent_state": ssm},
+            use_cache=True,
+        )
+        z = self.post_norm(u + mixed[:, 0])
+        state = torch.cat((z, conv_new.flatten(1), ssm_new.flatten(1)), dim=-1)
+        return z, state
+
+    def output(self, h: torch.Tensor) -> torch.Tensor:
+        return h[:, :self.out_dim]
 
 
-def make_backbone(name: str, in_dim: int, hidden_dim: int) -> SequenceBackbone:
+BACKBONES: dict[str, type[SequenceBackbone]] = {"gru": GRUBackbone, "mamba": MambaBackbone}
+
+
+def make_backbone(name: str, in_dim: int, hidden_dim: int, **kwargs) -> SequenceBackbone:
     if name not in BACKBONES:
         raise ValueError(f"backbone={name!r}, 지원: {sorted(BACKBONES)}")
-    return BACKBONES[name](in_dim, hidden_dim)
+    return BACKBONES[name](in_dim, hidden_dim, **kwargs)

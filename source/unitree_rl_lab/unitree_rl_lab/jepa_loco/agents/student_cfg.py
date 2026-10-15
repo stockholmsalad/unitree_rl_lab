@@ -8,6 +8,11 @@ from isaaclab.utils import configclass
 @configclass
 class StudentTrainCfg:
     method: str = "gru_jepa"
+    backbone: str = "gru"
+    mamba_intermediate_size: int = 256
+    mamba_state_size: int = 16
+    mamba_conv_kernel: int = 4
+    mamba_dt_rank: int | str = "auto"
     num_envs: int = 64
     rollout_steps: int = 100
     num_mini_batches: int = 4
@@ -52,6 +57,13 @@ class StudentTrainCfg:
     def validate_training(self, control_dt: float, depth_period_steps: int) -> int:
         if self.method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
             raise ValueError("지원하지 않는 student 비교군")
+        if self.backbone not in ("gru", "mamba") or (self.method == "no_memory" and self.backbone == "mamba"):
+            raise ValueError("backbone은 gru/mamba이고 no_memory에는 mamba를 쓸 수 없다")
+        if min(self.mamba_intermediate_size, self.mamba_state_size, self.mamba_conv_kernel) < 1 or (
+            self.mamba_dt_rank != "auto" and
+            (not isinstance(self.mamba_dt_rank, int) or self.mamba_dt_rank < 1)
+        ):
+            raise ValueError("Mamba 크기와 dt_rank가 올바르지 않다")
         if self.train_new_head or not self.use_frozen_teacher_head or self.enable_future_terrain_distill:
             raise NotImplementedError("새 head·future terrain은 확정 후 별도 ablation으로 구현한다")
         if min(self.lambda_z, self.lambda_a, self.lambda_j) < 0:

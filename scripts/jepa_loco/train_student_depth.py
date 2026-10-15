@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--teacher_checkpoint", required=True)
 parser.add_argument("--teacher_stats", required=True)
 parser.add_argument("--method", choices=("no_memory", "gru", "gru_jepa", "gru_copy"), required=True)
+parser.add_argument("--backbone", choices=("gru", "mamba"), default="gru")
 parser.add_argument("--num_envs", type=int, required=True)
 parser.add_argument("--max_iterations", type=int, required=True)
 parser.add_argument("--seed", type=int, default=43)
@@ -69,7 +70,7 @@ def main() -> None:
     if args.proprio_window is not None:
         overrides["proprio_window"] = args.proprio_window
     train = StudentTrainCfg(method=args.method, num_envs=args.num_envs,
-                            max_iterations=args.max_iterations, **overrides)
+                            max_iterations=args.max_iterations, backbone=args.backbone, **overrides)
     task = "Unitree-Go2-JepaLoco-StudentDepth-EasyStart"
     env_cfg = parse_env_cfg(task, device=args.device, num_envs=train.num_envs)
     env_cfg.seed = args.seed
@@ -98,6 +99,9 @@ def main() -> None:
         proprio_input=train.proprio_input, proprio_dim=train.proprio_dim,
         proprio_hidden_dims=train.proprio_hidden_dims,
         proprio_window=train.proprio_window,
+        backbone=train.backbone, mamba_intermediate_size=train.mamba_intermediate_size,
+        mamba_state_size=train.mamba_state_size, mamba_conv_kernel=train.mamba_conv_kernel,
+        mamba_dt_rank=train.mamba_dt_rank,
     ).to(device)
     optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad),
                                  lr=train.learning_rate)
@@ -291,7 +295,7 @@ def main() -> None:
         for name, value in logs.items():
             writer.add_scalar(name, value, iteration)
         print(f"STUDENT_ITER {iteration + 1}/{train.max_iterations} "
-              f"method={train.method} loss={logs['Loss/total']:.5f} "
+              f"method={train.method} backbone={train.backbone} loss={logs['Loss/total']:.5f} "
               f"z={logs['Loss/latent']:.5f} action={logs['Loss/action']:.5f} "
               f"jepa={logs['Loss/jepa']:.5f} mask={logs['Diagnosis/jepa_mask_coverage']:.3f} "
               f"copy={logs['Diagnosis/jepa_copy_loss']:.5f} "

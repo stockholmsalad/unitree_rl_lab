@@ -59,11 +59,16 @@ class StudentDepthModel(nn.Module):
                  cnn_strides: tuple[int, ...] = (2, 2, 2),
                  proprio_input: bool = False, proprio_dim: int = 45,
                  proprio_hidden_dims: tuple[int, ...] = (64, 64),
-                 proprio_window: int = 1):
+                 proprio_window: int = 1, backbone: str = "gru",
+                 mamba_intermediate_size: int = 256, mamba_state_size: int = 16,
+                 mamba_conv_kernel: int = 4, mamba_dt_rank: int | str = "auto"):
         super().__init__()
         if method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
             raise ValueError(f"student method={method!r}")
+        if backbone not in ("gru", "mamba") or (method == "no_memory" and backbone == "mamba"):
+            raise ValueError(f"student backbone={backbone!r}는 method={method!r}에 사용할 수 없다")
         self.method = method
+        self.backbone_name = backbone
         self.context_dim = context_dim
         self.proprio_input = proprio_input
         if proprio_window < 1:
@@ -84,7 +89,11 @@ class StudentDepthModel(nn.Module):
             # GRU 입력과 frame_embedding target 양쪽에 적용한다.
             self.frame_projection = (nn.Identity() if feature_dim == context_dim else
                                      nn.Linear(feature_dim, context_dim))
-            self.backbone = make_backbone("gru", context_dim + self.proprio_feature_dim, context_dim)
+            backbone_kwargs = ({"intermediate_size": mamba_intermediate_size, "state_size": mamba_state_size,
+                                "conv_kernel": mamba_conv_kernel, "dt_rank": mamba_dt_rank}
+                               if backbone == "mamba" else {})
+            self.backbone = make_backbone(backbone, context_dim + self.proprio_feature_dim,
+                                          context_dim, **backbone_kwargs)
         self.terrain_head = nn.Sequential(nn.Linear(context_dim, terrain_hidden_dim), nn.ELU(),
                                           nn.Linear(terrain_hidden_dim, terrain_dim))
         self.predictor = nn.Sequential(nn.Linear(context_dim + self.proprio_feature_dim + 3, predictor_hidden_dim), nn.ELU(),
@@ -268,6 +277,11 @@ class StudentInferencePolicy:
             proprio_dim=cfg.get("proprio_dim", 45),
             proprio_hidden_dims=tuple(cfg.get("proprio_hidden_dims", (64, 64))),
             proprio_window=cfg.get("proprio_window", 1),
+            backbone=cfg.get("backbone", "gru"),
+            mamba_intermediate_size=cfg.get("mamba_intermediate_size", 256),
+            mamba_state_size=cfg.get("mamba_state_size", 16),
+            mamba_conv_kernel=cfg.get("mamba_conv_kernel", 4),
+            mamba_dt_rank=cfg.get("mamba_dt_rank", "auto"),
         ).to(device)
         self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         self.model.eval()

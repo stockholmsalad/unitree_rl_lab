@@ -421,12 +421,15 @@ def test_student_fixed_eval_checkpoint_method_reset_and_deterministic_action(tmp
     cfg = StudentTrainCfg(method=method)
     model = StudentDepthModel(method=cfg.method)
     path = tmp_path / "model_2.pt"
-    torch.save({"model_state_dict": model.state_dict(), "student_cfg": cfg.to_dict(),
+    legacy_cfg = cfg.to_dict()
+    legacy_cfg.pop("backbone")  # 2026-10-15 이전 checkpoint 호환성
+    torch.save({"model_state_dict": model.state_dict(), "student_cfg": legacy_cfg,
                 "teacher_state_dict": teacher.actor.state_dict(), "iteration": 2,
                 "teacher_checkpoint": "teacher.pt", "teacher_stats": "stats.pt"}, path)
     student = StudentInferencePolicy(str(path), torch.device("cpu"))
     oracle = StudentInferencePolicy(str(path), torch.device("cpu"), policy_mode="teacher")
     assert student.method == oracle.method == method
+    assert student.model.backbone_name == "gru"
     obs = TensorDict({"depth": torch.rand(2, 2, 64, 112),
                       "depth_fresh": torch.ones(2, 1), "policy": torch.rand(2, 45),
                       "terrain_current": torch.rand(2, 187)}, batch_size=[2])
@@ -447,3 +450,22 @@ def test_student_fixed_eval_checkpoint_method_reset_and_deterministic_action(tmp
     assert torch.count_nonzero(student.state[1]) > 0
     student.reset(torch.tensor([True, True]))
     torch.testing.assert_close(student(obs), first)
+
+
+def test_mamba_checkpoint_inference_and_per_env_reset(tmp_path):
+    teacher = _teacher()
+    cfg = StudentTrainCfg(method="gru", backbone="mamba")
+    model = StudentDepthModel(method="gru", backbone="mamba")
+    path = tmp_path / "model_mamba.pt"
+    torch.save({"model_state_dict": model.state_dict(), "student_cfg": cfg.to_dict(),
+                "teacher_state_dict": teacher.actor.state_dict()}, path)
+    policy = StudentInferencePolicy(str(path), torch.device("cuda"))
+    obs = TensorDict({"depth": torch.rand(2, 2, 64, 112, device="cuda"),
+                      "depth_fresh": torch.ones(2, 1, device="cuda"),
+                      "policy": torch.rand(2, 45, device="cuda"),
+                      "terrain_current": torch.rand(2, 187, device="cuda")}, batch_size=[2])
+    assert policy(obs).shape == (2, 12)
+    assert policy.state.shape == (2, 5248)
+    policy.reset(torch.tensor([True, False], device="cuda"))
+    assert torch.count_nonzero(policy.state[0]) == 0
+    assert torch.count_nonzero(policy.state[1]) > 0
