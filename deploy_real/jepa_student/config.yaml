@@ -1,0 +1,20 @@
+{
+  "control_hz": 50, "depth_period_steps": 5,
+  "camera": {"width": 848, "height": 480, "fx": 430.7, "fy": 430.7, "cx": 424.5, "cy": 240.8, "intrinsics_tolerance_px": 2.0},
+  "depth_near_m": 0.28, "depth_far_m": 2.0, "depth_hw": [64, 112],
+  "ang_vel_scale": 0.2, "joint_vel_scale": 0.05, "observation_clip": 100.0,
+  "joint_ids_map": [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8],
+  "default_joint_pos": [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5],
+  "joint_limits": [[-1.0472, 1.0472], [-1.0472, 1.0472], [-1.0472, 1.0472], [-1.0472, 1.0472], [-1.5708, 3.4907], [-1.5708, 3.4907], [-0.5236, 4.5379], [-0.5236, 4.5379], [-2.7227, -0.83776], [-2.7227, -0.83776], [-2.7227, -0.83776], [-2.7227, -0.83776]],
+  "action_scale": 0.25, "policy_kp": 25.0, "policy_kd": 0.5,
+  "passive_kd": 3.0,
+  "stand_duration_s": 2.0,
+  "stand_middle_q_sdk": [0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65, 0, 1.36, -2.65],
+  "stand_final_q_sdk": [0, 0.8, -1.5, 0, 0.8, -1.5, 0, 0.8, -1.5, 0, 0.8, -1.5],
+  "stand_kp_sdk": [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80],
+  "stand_kd_sdk": [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4],
+  "buttons": {"passive_bit": 9, "stand_bit": 8, "policy_bit": 2},
+  "command": {"vx_min": 0.0, "vx_max": 0.6, "vy": 0.0, "yaw_min": -0.5, "yaw_max": 0.5},
+  "safety": {"max_tilt_deg": 45.0, "depth_timeout_s": 0.2, "lowstate_timeout_s": 0.1, "joint_limit_margin_rad": 0.05, "max_target_delta_rad": 0.35},
+  "log_flush_steps": 500
+}
