@@ -1,5 +1,7 @@
 import ast
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,6 +83,23 @@ class PureTests(unittest.TestCase):
         self.assertEqual(len(pack_lowcmd_for_crc(msg)), 808)
         # Same 812-byte C struct and crc32_core reference from unitree_ros2.
         self.assertEqual(motor_crc(msg), 0xb4a9d931)
+
+    @unittest.skipUnless(shutil.which("g++"), "C++ compiler unavailable")
+    def test_crc_against_compiled_unitree_layout(self):
+        motor = SimpleNamespace(mode=1, q=0.1, dq=0., tau=0., kp=25., kd=.5, reserve=[0, 0, 0])
+        msg = SimpleNamespace(head=[0xfe, 0xef], level_flag=0xff, frame_reserve=0,
+                              sn=[0, 0], version=[0, 0], bandwidth=0, motor_cmd=[motor] * 20,
+                              bms_cmd=SimpleNamespace(off=0, reserve=[0, 0, 0]),
+                              wireless_remote=[0] * 40, led=[0] * 12, fan=[0] * 2, gpio=0, reserve=0)
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "crc_reference"
+            raw = Path(directory) / "lowcmd.bin"
+            source = Path(__file__).with_name("crc_reference.cpp")
+            subprocess.check_call(["g++", "-std=c++11", str(source), "-o", str(binary)])
+            size, crc = subprocess.check_output([str(binary), str(raw)], text=True).split()
+            self.assertEqual(int(size), 812)
+            self.assertEqual(raw.read_bytes(), pack_lowcmd_for_crc(msg))
+            self.assertEqual(int(crc, 16), motor_crc(msg))
 
 
 @unittest.skipUnless(CHECKPOINT.exists(), "Z790 student checkpoint unavailable")
