@@ -1382,3 +1382,13 @@ iteration 0/1의 `Loss/jepa`는 **2281.232 / 4723.199**,
 따라 **0.000 / 1.589**였다. 큰 초기 online→EMA 손실은 그대로
 기록했고 이 스모크에서 계수나 정규화 방식을 바꾸지 않았다.
 Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하지 않았다.
+
+## 2026-10-16 — depth-only GRU student의 Orin NX NumPy 배포 준비
+
+- 대상은 teacher 17000의 `gru_t17000_s43/model_3000.pt`다. 정책·학습 환경·checkpoint는 바꾸지 않고 추론용 CNN, GRU, terrain head, teacher 관측 정규화기와 고정 head만 `.npz`/`.json`으로 export한다. predictor·EMA·heightmap encoder는 제외한다.
+- Orin 코드는 Python 3.8/NumPy 1.17 문법과 API만 사용한다. 실기 depth는 기존 `downsample_real(..., mode="nearest", near=0.28)`의 mask-aware footprint 선택과 동일하게 112×64로 만들고 `to_two_channel(0.28,2.0)`을 적용한다. 실기 영상에는 시뮬 노이즈/왼쪽 결측 띠를 더하지 않는다.
+- 관측 45차원 순서는 몸통 각속도×0.2, projected gravity, velocity command, 기본 관절 위치와의 차이, 관절 속도×0.05, 직전 action이다. SDK→Isaac 관절 매핑과 기본 자세, action scale 0.25, Kp/Kd 25/0.5는 Go2 학습 자산과 대조한다. 조이스틱 B 단일 버튼은 즉시 Passive, A는 FixStand, 2초 후 Start는 Policy다. depth/lowstate 타임아웃·기울기·관절 한계·목표 점프는 Passive로 전환한다. 기본은 `/lowcmd` publisher 없는 dry-run이다.
+- Unitree 원본 `motor_crc.cpp`의 패딩 포함 LowCmd 구조체 812바이트와 CRC를 C++ 독립 빌드로 대조했다. 샘플 벡터 CRC는 `0xb4a9d931`이다. ROS2 `/api/motion_switcher`의 확인된 요청 형식은 얻지 못해 자동 해제 호출은 구현하지 않았다. 실제 Orin에서 sport mode를 수동 해제하고 메시 import를 확인해야 한다.
+- Z790: checkpoint export 성공. NumPy/PyTorch 205스텝 fresh/reset 포함 행동 최대 오차는 단위 테스트에서 1e-4 이하. `flat_stand` 16UC1 PNG 3장의 전처리 출력은 PyTorch 기준과 atol 1e-6에서 일치. 150스텝 가짜 lowstate 오프라인 dry-run은 평균 지연 1.3 ms, p99 25.4 ms, 20 ms 초과 3회였다. 이는 Z790 수치이고 Orin 실시간성을 보증하지 않는다. 배포 단위 테스트 10개(합성 NPZ 재생 포함)와 Isaac 앱 내부 기존 테스트 164개가 통과했다.
+- 시뮬 평가에 `--record_rollout` 옵션을 추가해 policy/depth/fresh/reset/action을 최대 4 env 기록하고 NumPy로 재생할 수 있게 했다. 짧은 Isaac Sim 평지 평가가 현재 도구 세션에서 JSON/NPZ 없이 종료되어 시뮬 rollout 재생 일치는 아직 확인하지 못했다. 실기 동작 결과는 아직 없다.
+- 이 Z790 셸에는 Python 3.8 실행 파일이 없고 `env_test`의 NumPy는 1.26.0이다. 모든 Orin 파일은 Python 3.8 AST 문법 검사와 NumPy 1.17에 존재하는 API만 썼지만, 정확한 Orin 버전에서의 import/실시간성은 현장 dry-run으로 확인해야 한다.

@@ -579,6 +579,11 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
 
     latent_sums = latent_counts = None
     action_error_sums = action_error_counts = None
+    rollout_record = ({key: [] for key in ("policy", "depth", "depth_fresh", "reset", "action")}
+                      if getattr(args, "record_rollout", None) else None)
+    record_count = min(env.num_envs, getattr(args, "record_env_count", 4))
+    if rollout_record is not None and record_count < 1:
+        raise ValueError("record_env_count는 1 이상이어야 한다")
     if latent_stats is not None:
         latent_sums = torch.zeros((env.num_envs, 2), device=env.unwrapped.device)
         latent_counts = torch.zeros_like(latent_sums)
@@ -600,6 +605,10 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                 scan = action_obs["terrain_current"]
                 action_obs["terrain_current"] = scan.amax(dim=1, keepdim=True).expand_as(scan)
             actions = policy(action_obs)
+            if rollout_record is not None:
+                for key in ("policy", "depth", "depth_fresh"):
+                    rollout_record[key].append(obs[key][:record_count].detach().cpu().numpy())
+                rollout_record["action"].append(actions[:record_count].detach().cpu().numpy())
             if latent_sums is not None:
                 teacher_z = policy.teacher.terrain_latent(obs["terrain_current"])
                 latent_error = torch.linalg.vector_norm(
@@ -618,6 +627,8 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
                         action_error_sums[:, bucket] += torch.where(selected, action_error, 0.0)
                         action_error_counts[:, bucket] += selected.float()
             obs, rewards, dones, extras = env.step(actions)
+            if rollout_record is not None:
+                rollout_record["reset"].append(dones[:record_count].detach().cpu().numpy())
             reward_term_sums += torch.where(
                 active[:, None], reward_terms._step_reward * env.unwrapped.step_dt, 0.0,
             )
@@ -962,6 +973,11 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
             ),
         } if args.terrain == "gap" else {}),
     } for i in range(env.num_envs)]
+    if rollout_record is not None:
+        import numpy as np
+        record_path = Path(args.record_rollout)
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(str(record_path), **{key: np.stack(values) for key, values in rollout_record.items()})
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2))

@@ -26,6 +26,10 @@ parser.add_argument("--latent_noise_std", type=float, default=None,
                     help="teacher latent에 teacher std 단위 Gaussian 잡음을 더한다.")
 parser.add_argument("--latent_noise_mode", choices=("step", "episode"), default=None)
 parser.add_argument("--output", type=str, default=None)
+parser.add_argument("--record_rollout", type=str, default=None,
+                    help="NumPy 정책 재생용 policy/depth/fresh/reset/action 스텝 기록 (.npz).")
+parser.add_argument("--record_env_count", type=int, default=4,
+                    help="기록할 첫 env 수 (기본 4, 평가 집계는 전체 env).")
 parser.add_argument("--video", action="store_true")
 parser.add_argument("--viewer_env_index", type=int, default=None,
                     help="--video로 녹화할 env 번호 (기본 0).")
