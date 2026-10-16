@@ -27,14 +27,28 @@ Orin에서 ROS2 Foxy와 `~/unitree_ros2`, `~/cyclonedds_ws`를 source한 셸에�
 source /opt/ros/foxy/setup.bash && source ~/cyclonedds_ws/install/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && python3 ~/jepa_student/go2_student_node.py --model_prefix ~/jepa_student/gru_t17000_s43 --log ~/jepa_student/dry_run.npz
 ```
 
-ROS2 sport mode 자동 해제 서비스의 요청 스키마는 설치 환경에서 확인되지 않았다. `--live` 전에 Unitree의 기존 도구에서 sport mode를 끄고 low-level 제어권이 해제된 것을 확인한다. 로봇을 매단 상태에서 `--sport_mode_released`를 명시해 FixStand와 정책을 시험한다. 확인 없이 플래그를 넣지 않는다.
+ROS2 `/api/motion_switcher` 자동 해제 서비스의 요청 스키마는 설치 환경에서 확인되지 않았다. `--live` 전에 Unitree의 [Go2 low-level 예제](https://github.com/unitreerobotics/unitree_sdk2/blob/main/example/go2/go2_stand_example.cpp)에 나온 `MotionSwitcherClient.CheckMode()`와 `ReleaseMode()` 절차가 가능한 기존 도구에서 sport mode가 해제되어 `motionName`이 비었는지 확인한다. 로봇을 매단 상태에서 `--sport_mode_released`를 명시해 FixStand와 정책을 시험한다. 확인 없이 플래그를 넣지 않는다.
 
 ```bash
 # ★ Go2 Orin NX
 source /opt/ros/foxy/setup.bash && source ~/cyclonedds_ws/install/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && python3 ~/jepa_student/go2_student_node.py --model_prefix ~/jepa_student/gru_t17000_s43 --log ~/jepa_student/suspended_live.npz --live --sport_mode_released
 ```
 
-그다음 같은 명령으로 평지 저속을 확인하고, 마지막으로 9~12 cm 계단을 시험한다. 조이스틱 왼쪽 세로축은 전진 0~0.6 m/s, 오른쪽 가로축은 yaw ±0.5 rad/s다. B 버튼 하나로 어느 상태에서든 Passive, A로 FixStand, 2초 뒤 Start로 Policy에 들어간다. Passive에서 Policy 직접 전환은 없다. 모든 버튼·gain·안전 한계는 `config.yaml`에 있다.
+매단 상태에서 정상 동작을 확인한 뒤 평지 저속 시험을 한다. 조이스틱 전진축을 조금만 밀어 명령을 낮게 유지한다.
+
+```bash
+# ★ Go2 Orin NX
+source /opt/ros/foxy/setup.bash && source ~/cyclonedds_ws/install/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && python3 ~/jepa_student/go2_student_node.py --model_prefix ~/jepa_student/gru_t17000_s43 --log ~/jepa_student/flat_slow.npz --live --sport_mode_released
+```
+
+평지 영상과 로그를 확인한 뒤 9~12 cm 계단을 시험한다.
+
+```bash
+# ★ Go2 Orin NX
+source /opt/ros/foxy/setup.bash && source ~/cyclonedds_ws/install/setup.bash && export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp && python3 ~/jepa_student/go2_student_node.py --model_prefix ~/jepa_student/gru_t17000_s43 --log ~/jepa_student/stairs_9_12cm.npz --live --sport_mode_released
+```
+
+조이스틱 왼쪽 세로축은 전진 0~0.6 m/s, 오른쪽 가로축은 yaw ±0.5 rad/s다. B 버튼 하나로 어느 상태에서든 Passive, A로 FixStand, 2초 뒤 Start로 Policy에 들어간다. Passive에서 Policy 직접 전환은 없다. 모든 버튼·gain·안전 한계는 `config.yaml`에 있다.
 
 매 제어 스텝의 관측, latent, action, 명령, FSM, depth 수신 시각, 루프 지연이 `.npz`에 저장된다. `log_flush_steps`마다 `_000000.npz` 형식의 청크를 저장하고 종료 시 남은 청크를 저장한다. 루프 지연 평균·p99·20 ms 초과 횟수를 출력한다. `/lowcmd`는 `--live`가 없으면 publisher 자체를 만들지 않는다.
 
