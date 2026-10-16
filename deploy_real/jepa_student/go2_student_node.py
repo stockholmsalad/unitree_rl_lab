@@ -269,7 +269,16 @@ def main():
 
         def tick(self):
             now = time.monotonic()
-            result = controller.step(now)
+            try:
+                result = controller.step(now)
+            except Exception as exc:
+                controller.fsm.state = "Passive"
+                controller.policy.reset()
+                controller.last_action.fill(0)
+                self.get_logger().error("정책 계산 오류로 Passive 전환: {}".format(exc))
+                if self.publisher is not None:
+                    self.publisher.publish(build_lowcmd({"state": "Passive", "target": None}, controller, now, LowCmd))
+                return
             if result is None:
                 return
             if self.publisher is not None:
