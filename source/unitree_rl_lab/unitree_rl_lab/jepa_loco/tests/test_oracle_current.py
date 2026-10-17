@@ -11,6 +11,8 @@ from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import (
     OracleCurrentEasyStartEnvCfg,
     OracleCurrentEasyStartTightTrackEnvCfg,
     OracleCurrentEasyStartTightTrackEnvCfg_PLAY,
+    OracleCurrentEasyStartProgressEnvCfg,
+    OracleCurrentEasyStartProgressEnvCfg_PLAY,
     OracleCurrentFutureEasyStartEnvCfg,
     OracleCurrentFutureEasyStartEnvCfg_PLAY,
     OracleWideEnvCfg,
@@ -19,13 +21,59 @@ from unitree_rl_lab.jepa_loco.envs.oracle_heightmap import sample_command_future
 from unitree_rl_lab.jepa_loco.models.oracle_actor import OracleTerrainActor
 from unitree_rl_lab.jepa_loco.envs.path_curriculum import terrain_levels_path
 from unitree_rl_lab.jepa_loco.envs.oracle_curriculum_env import tracking_step_diagnostics
+from unitree_rl_lab.jepa_loco.envs.rewards import track_lin_vel_progress_values
 from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import (
     OracleCurrentPPORunnerCfg,
     OracleCurrentTightTrackPPORunnerCfg,
+    OracleCurrentProgressPPORunnerCfg,
     OracleWidePPORunnerCfg,
     OracleCurrentFuturePPORunnerCfg,
     OracleCurrentFutureEasyStartPPORunnerCfg,
 )
+
+
+def test_command_direction_progress_reward_values():
+    commands = torch.tensor([[0.6, 0.0]] * 5 + [[0.0, 0.6], [0.05, 0.0], [0.0, 0.0]])
+    velocities = torch.tensor([
+        [0.0, 0.0], [0.6, 0.0], [1.2, 0.0], [-0.3, 0.0], [-1.2, 0.0],
+        [0.0, 0.6], [0.0, 0.0], [0.0, 0.0],
+    ])
+    values = track_lin_vel_progress_values(
+        commands, velocities, command_threshold=0.1, std_small=0.5, min_reward=-1.0,
+    )
+    expected = torch.tensor([0.0, 1.0, 1.0, -0.5, -1.0, 1.0, torch.exp(torch.tensor(-0.01)), 1.0])
+    torch.testing.assert_close(values, expected)
+    assert values.shape == (8,) and torch.isfinite(values).all()
+    orthogonal = track_lin_vel_progress_values(
+        torch.tensor([[0.6, 0.0]]), torch.tensor([[0.0, 0.6]]),
+        command_threshold=0.1, std_small=0.5, min_reward=-1.0,
+    )
+    assert orthogonal.item() == 0.0
+
+
+def test_progress_task_only_adds_one_reward_term():
+    base = OracleCurrentEasyStartEnvCfg()
+    progress = OracleCurrentEasyStartProgressEnvCfg()
+    play = OracleCurrentEasyStartProgressEnvCfg_PLAY()
+    assert "track_lin_vel_progress" not in base.rewards.to_dict()
+    progress_rewards = progress.rewards.to_dict()
+    term = progress_rewards.pop("track_lin_vel_progress")
+    assert progress_rewards == base.rewards.to_dict()
+    assert term["weight"] == 1.0
+    assert term["params"]["command_threshold"] == 0.1
+    assert term["params"]["std_small"] == 0.5
+    assert term["params"]["min_reward"] == -1.0
+    assert progress.rewards.track_lin_vel_xy.params["std"] == base.rewards.track_lin_vel_xy.params["std"] == 0.5
+    assert play.rewards.track_lin_vel_progress.weight == 1.0
+    for name in ("scene", "observations", "commands", "terminations", "events", "curriculum",
+                 "progress", "swing_clearance", "nominal_pose", "tracking", "sim"):
+        assert getattr(base, name).to_dict() == getattr(progress, name).to_dict(), name
+    assert base.episode_length_s == progress.episode_length_s
+    assert base.decimation == progress.decimation
+    runner_base = OracleCurrentPPORunnerCfg().to_dict()
+    runner_progress = OracleCurrentProgressPPORunnerCfg().to_dict()
+    runner_progress["experiment_name"] = runner_base["experiment_name"]
+    assert runner_progress == runner_base
 
 
 def test_tight_track_changes_only_linear_tracking_std_and_experiment_name():

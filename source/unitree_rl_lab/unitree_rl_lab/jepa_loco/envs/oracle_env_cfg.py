@@ -20,7 +20,7 @@ from .depth_env_cfg import JepaRewardsCfg
 from .easy_start_terrain import EasyStartTerrainCfg, make_easy_start_terrain
 from .oracle_heightmap import future_height_scan
 from .path_curriculum import terrain_levels_path
-from .rewards import nominal_pose_hip, nominal_pose_thigh_calf, swing_foot_clearance
+from .rewards import nominal_pose_hip, nominal_pose_thigh_calf, swing_foot_clearance, track_lin_vel_progress
 
 
 @configclass
@@ -42,6 +42,11 @@ class OracleProgressCfg:
     forward_attempt_speed_mps: float = 0.2
     warmup_levels: int = 0
     first_tread_contact_threshold_n: float = 1.0
+    # Teacher v3 reward parameters. The original tasks do not instantiate this reward term.
+    weight: float = 1.0
+    command_threshold: float = 0.1
+    std_small: float = 0.5
+    min_reward: float = -1.0
 
 
 @configclass
@@ -125,6 +130,22 @@ class OracleCurrentRewardsCfg(JepaRewardsCfg):
             "command_threshold": 0.1,
         },
     )
+
+
+@configclass
+class OracleCurrentProgressRewardsCfg(OracleCurrentRewardsCfg):
+    track_lin_vel_progress = RewTerm(
+        func=track_lin_vel_progress, weight=1.0,
+        params={"command_name": "base_velocity", "command_threshold": 0.1,
+                "std_small": 0.5, "min_reward": -1.0},
+    )
+
+
+def configure_progress_reward(cfg):
+    term = cfg.rewards.track_lin_vel_progress
+    term.weight = cfg.progress.weight
+    for key in ("command_threshold", "std_small", "min_reward"):
+        term.params[key] = getattr(cfg.progress, key)
 
 
 def configure_current_rewards(cfg):
@@ -212,6 +233,24 @@ class OracleCurrentEasyStartTightTrackEnvCfg(OracleCurrentEasyStartEnvCfg):
 @configclass
 class OracleCurrentEasyStartTightTrackEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg_PLAY):
     tracking: OracleTrackingCfg = OracleTrackingCfg(lin_vel_std=0.25)
+
+
+@configclass
+class OracleCurrentEasyStartProgressEnvCfg(OracleCurrentEasyStartEnvCfg):
+    rewards: OracleCurrentProgressRewardsCfg = OracleCurrentProgressRewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        configure_progress_reward(self)
+
+
+@configclass
+class OracleCurrentEasyStartProgressEnvCfg_PLAY(OracleCurrentEasyStartEnvCfg_PLAY):
+    rewards: OracleCurrentProgressRewardsCfg = OracleCurrentProgressRewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        configure_progress_reward(self)
 
 
 def configure_easy_start_play(cfg):

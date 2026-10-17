@@ -215,6 +215,10 @@ class OracleCurriculumEnv(JepaDiagnosticEnv):
                     prefix = f"Diagnosis/tracking/{name}"
                     log[f"{prefix}/episode_count"] = mask.sum()
                     log[f"{prefix}/episode_track_lin_vel_xy_reward"] = reward_sums["track_lin_vel_xy"][mask].mean()
+                    if "track_lin_vel_progress" in reward_sums:
+                        log[f"{prefix}/episode_track_lin_vel_progress_reward"] = (
+                            reward_sums["track_lin_vel_progress"][mask].mean()
+                        )
                     log[f"{prefix}/episode_velocity_error_xy_mps"] = (
                         tracking_error_sum[mask] / tracking_step_count[mask].clamp_min(1)
                     ).mean()

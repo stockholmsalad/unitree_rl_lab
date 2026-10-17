@@ -5,6 +5,36 @@ from __future__ import annotations
 import torch
 
 
+def track_lin_vel_progress_values(
+    command_xy: torch.Tensor, body_velocity_xy: torch.Tensor, *,
+    command_threshold: float, std_small: float, min_reward: float,
+) -> torch.Tensor:
+    """명령 방향의 몸통 좌표계 진행률. 작은 명령에서는 정지 추종 보상을 사용한다."""
+    if command_xy.ndim != 2 or command_xy.shape[1] != 2 or body_velocity_xy.shape != command_xy.shape:
+        raise ValueError("command_xy와 body_velocity_xy는 같은 [N,2] shape이어야 한다")
+    if command_threshold <= 0 or std_small <= 0 or min_reward > 0:
+        raise ValueError("command_threshold/std_small은 양수이고 min_reward는 0 이하여야 한다")
+    speed = torch.linalg.vector_norm(command_xy, dim=1)
+    projected_ratio = (command_xy * body_velocity_xy).sum(dim=1) / speed.square().clamp_min(
+        command_threshold**2
+    )
+    progress = projected_ratio.clamp(min=min_reward, max=1.0)
+    small_command = torch.exp(-((command_xy - body_velocity_xy).square().sum(dim=1)) / std_small**2)
+    return torch.where(speed >= command_threshold, progress, small_command)
+
+
+def track_lin_vel_progress(
+    env, command_name: str, command_threshold: float = 0.1,
+    std_small: float = 0.5, min_reward: float = -1.0,
+) -> torch.Tensor:
+    command_xy = env.command_manager.get_command(command_name)[:, :2]
+    body_velocity_xy = env.scene["robot"].data.root_lin_vel_b[:, :2]
+    return track_lin_vel_progress_values(
+        command_xy, body_velocity_xy, command_threshold=command_threshold,
+        std_small=std_small, min_reward=min_reward,
+    )
+
+
 def nominal_pose_penalty_values(
     joint_pos: torch.Tensor,
     default_joint_pos: torch.Tensor,
