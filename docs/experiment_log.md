@@ -1401,3 +1401,4 @@ Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하�
 - `results/jepa_loco/course_eval/run_course.sh`는 teacher 17000과 student 다섯 종류의 model_3000을 seed 43, 높이당 128 env로 평가하며 기존 JSON을 건너뛴다. 이 본 평가는 이번 구현 단계에서 실행하지 않는다. 결과 해석이나 성능 주장은 아직 하지 않는다.
 - Z790에서 Isaac 앱 내부 테스트 168개 통과. 최종 지형의 3개 높이×4 env 실제 USD ray 감사 통과(설계 단면 최대 오차 0.00235 m). 감사 JSON과 단면 그림은 `results/jepa_loco/course_eval/smoke/terrain_audit_4x3*`에 보관한다. teacher 17000 3개 높이×4 env 영상 스모크는 JSON·영상·구간별 기록을 생성했다(`smoke/teacher_course_4x3*`). 이는 실행 경로 점검이며 본 평가 결과가 아니다.
 - 같은 설정의 depth-only GRU student 스모크도 JSON·구간별 기록을 생성했다(`smoke/gru_course_4x3.json`). 이 소수 env 재생으로 모델 간 성능을 판단하지 않는다.
+- 영상은 viewer env의 판정이 확정된 스텝에서 종료하도록 했다. 최종 teacher 영상 스모크(`smoke/teacher_video_stop_4x3*`)에서 env 0 성공 후 영상 길이 24.56 s였고, 영상 종료 전후 12 env의 성공 판정은 동일했다. 평가 자체는 다른 env의 종료까지 계속됐다.

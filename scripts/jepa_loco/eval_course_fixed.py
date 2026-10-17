@@ -176,10 +176,12 @@ def run_course_eval(args, *, policy_factory=None, latent_stats=None):
             output.write_text(json.dumps({"terrain": "course", "course": c.to_dict(), "tiles": checks}, indent=2))
             print(f"COURSE_AUDIT_OK tiles={len(checks)} output={output}", flush=True)
             return
+        video_wrapper = None
         if args.video:
-            env = gym.wrappers.RecordVideo(env, video_folder=str(output.with_suffix("")) + "_video",
-                                           step_trigger=lambda step: step == 0,
-                                           video_length=c.episode_steps, disable_logger=True)
+            video_wrapper = gym.wrappers.RecordVideo(env, video_folder=str(output.with_suffix("")) + "_video",
+                                                     step_trigger=lambda step: step == 0,
+                                                     video_length=c.episode_steps, disable_logger=True)
+            env = video_wrapper
         env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
         if student_task:
             policy = (policy_factory(str(Path(args.checkpoint).resolve()), torch.device(env.unwrapped.device))
@@ -284,6 +286,8 @@ def run_course_eval(args, *, policy_factory=None, latent_stats=None):
                         tm = env.unwrapped.termination_manager
                         done_reasons[i] = [name for name in tm.active_terms if bool(tm.get_term(name)[i])]
                 active &= ~stopping
+                if video_wrapper is not None and not bool(active[c.viewer_env_index]) and video_wrapper.recording:
+                    video_wrapper.stop_recording()
                 if not bool(active.any()):
                     break
         for i in torch.nonzero(active, as_tuple=True)[0].tolist():
