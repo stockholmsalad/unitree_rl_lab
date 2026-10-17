@@ -15,7 +15,8 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
 from isaaclab_tasks.utils import load_cfg_from_registry
 from unitree_rl_lab.jepa_loco.agents.rsl_rl_cfg import OracleCurrentPPORunnerCfg
 from unitree_rl_lab.jepa_loco.eval.course import (
-    CourseEvalCfg, CourseTerrainCfg, SECTION_NAMES, course_outcome, section_edges, designed_height,
+    CourseEvalCfg, CourseTerrainCfg, SECTION_NAMES, course_outcome, section_edges, section_pass_edges,
+    designed_height,
 )
 from unitree_rl_lab.jepa_loco.models.student_depth import StudentInferencePolicy
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
@@ -199,7 +200,8 @@ def run_course_eval(args, *, policy_factory=None, latent_stats=None):
         start_y = robot.data.root_pos_w[:, 1].clone()
         tile_start = origin[:, 0] - env_cfg.scene.terrain.terrain_generator.size[0] / 2
         edges = section_edges(c)
-        target_x = edges[7] + c.finish_inset_m
+        pass_edges = section_pass_edges(c)
+        target_x = pass_edges[-1]
         end_steps = torch.full((n, len(SECTION_NAMES)), -1, dtype=torch.long, device=device)
         last_section = torch.zeros(n, dtype=torch.long, device=device)
         outcome = [None] * n
@@ -264,7 +266,7 @@ def run_course_eval(args, *, policy_factory=None, latent_stats=None):
                 max_forward = torch.where(active, torch.maximum(max_forward, x), max_forward)
                 lateral_after = (robot.data.root_pos_w[:, 1] - start_y).abs()
                 off_course = live & (lateral_after > c.width_m / 2 - c.off_course_margin_m)
-                for s, edge in enumerate((*edges[:-1], target_x)):
+                for s, edge in enumerate(pass_edges):
                     crossed = active & (end_steps[:, s] < 0) & (x >= edge)
                     end_steps[:, s] = torch.where(crossed, step + 1, end_steps[:, s])
                 current_sec = torch.as_tensor(np.searchsorted(edges, x.detach().cpu().numpy(), side="right"),
@@ -320,7 +322,8 @@ def run_course_eval(args, *, policy_factory=None, latent_stats=None):
                                            for name in SECTION_NAMES}}
         report = {"task": args.task, "terrain": "course", "checkpoint": str(Path(args.checkpoint).resolve()),
                   "seed": c.seed, "course": c.to_dict(), "section_names": SECTION_NAMES,
-                  "section_end_x_m": edges, "finish_target_x_m": target_x,
+                  "section_end_x_m": pass_edges, "physical_section_end_x_m": edges,
+                  "finish_target_x_m": target_x,
                   "success_rule": f"x from tile start >= {target_x:.2f} m for {c.hold_steps} consecutive active steps",
                   "failure_rule": "fall=non-timeout termination; stall=timeout/horizon; off_course=abs(y-y0)>width/2-margin",
                   "heading_rule": "yaw_rate=clip(-gain*wrap(yaw), +/-max)" if c.heading_hold else "yaw_rate=0",

@@ -7,7 +7,7 @@ import pytest
 
 from unitree_rl_lab.jepa_loco.eval.course import (
     CourseEvalCfg, CourseTerrainCfg, course_outcome, course_terrain, designed_height,
-    heading_yaw_rate, section_edges, section_index,
+    heading_yaw_rate, section_edges, section_index, section_pass_edges,
 )
 
 
@@ -15,6 +15,7 @@ def test_course_edges_and_heights():
     c = CourseEvalCfg()
     e = section_edges(c)
     assert np.allclose(e, (2, 4, 5.5, 6.7, 8.2, 9.4, 10.9, 13.9, 15.4))
+    assert np.isclose(section_pass_edges(c)[-1], 14.4)
     h = 0.12
     ramp = 2 * math.tan(math.radians(10))
     assert np.isclose(designed_height(0.5, h, c), 0)

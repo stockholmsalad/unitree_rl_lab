@@ -70,6 +70,12 @@ def section_edges(cfg: CourseEvalCfg) -> tuple[float, ...]:
     return tuple(np.cumsum(lengths).tolist())
 
 
+def section_pass_edges(cfg: CourseEvalCfg) -> tuple[float, ...]:
+    """마지막 구간은 전체 타일 끝 대신 도착 평지의 성공 지점에서 통과한다."""
+    edges = section_edges(cfg)
+    return (*edges[:-1], edges[7] + cfg.finish_inset_m)
+
+
 def section_index(x_from_tile_start_m: float, cfg: CourseEvalCfg) -> int:
     return min(int(np.searchsorted(section_edges(cfg), x_from_tile_start_m, side="right")), len(SECTION_NAMES) - 1)
 
