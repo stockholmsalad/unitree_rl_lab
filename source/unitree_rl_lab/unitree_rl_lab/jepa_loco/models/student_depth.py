@@ -12,6 +12,7 @@ from .backbone import make_backbone
 from .depth_cnn import DepthCNN
 from .oracle_actor import OracleTerrainActor
 from .student_batches import ProprioHistory, proprio_windows
+from .student_reconstruction import CurrentHeightDecoder, FutureDepthDecoder
 from unitree_rl_lab.jepa_loco.eval.latent_noise import TeacherLatentNoise
 
 
@@ -61,9 +62,12 @@ class StudentDepthModel(nn.Module):
                  proprio_hidden_dims: tuple[int, ...] = (64, 64),
                  proprio_window: int = 1, backbone: str = "gru",
                  mamba_intermediate_size: int = 256, mamba_state_size: int = 16,
-                 mamba_conv_kernel: int = 4, mamba_dt_rank: int | str = "auto"):
+                 mamba_conv_kernel: int = 4, mamba_dt_rank: int | str = "auto",
+                 recon_hidden_dim: int = 64, recon_seed_channels: int = 4,
+                 recon_height_hidden_dim: int = 256, heightmap_dim: int = 187):
         super().__init__()
-        if method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
+        if method not in ("no_memory", "gru", "gru_jepa", "gru_copy",
+                          "gru_recon_depth", "gru_recon_height"):
             raise ValueError(f"student method={method!r}")
         if backbone not in ("gru", "mamba") or (method == "no_memory" and backbone == "mamba"):
             raise ValueError(f"student backbone={backbone!r}는 method={method!r}에 사용할 수 없다")
@@ -98,6 +102,17 @@ class StudentDepthModel(nn.Module):
                                           nn.Linear(terrain_hidden_dim, terrain_dim))
         self.predictor = nn.Sequential(nn.Linear(context_dim + self.proprio_feature_dim + 3, predictor_hidden_dim), nn.ELU(),
                                        nn.Linear(predictor_hidden_dim, context_dim))
+        if method == "gru_recon_depth":
+            self.reconstruction_decoder = FutureDepthDecoder(
+                context_dim + self.proprio_feature_dim + 3, image_hw,
+                recon_hidden_dim, recon_seed_channels,
+            )
+        elif method == "gru_recon_height":
+            self.reconstruction_decoder = CurrentHeightDecoder(
+                context_dim + self.proprio_feature_dim, heightmap_dim, recon_height_hidden_dim,
+            )
+        else:
+            self.reconstruction_decoder = None
         if proprio_input:
             widths = (proprio_dim, *proprio_hidden_dims)
             self.proprio_encoder = nn.Sequential(*[
@@ -239,6 +254,20 @@ class StudentDepthModel(nn.Module):
                 proprio, proprio_normalizer, valid=proprio_valid), command), dim=-1))
         return self.predictor(torch.cat((context, command), dim=-1))
 
+    def reconstruct(self, context: torch.Tensor, command: torch.Tensor | None = None,
+                    proprio: torch.Tensor | None = None, proprio_normalizer: nn.Module | None = None,
+                    proprio_valid: torch.Tensor | None = None) -> torch.Tensor:
+        if self.reconstruction_decoder is None:
+            raise ValueError("이 method에는 reconstruction decoder가 없다")
+        inputs = [context]
+        if self.proprio_input:
+            inputs.append(self.encode_proprio(proprio, proprio_normalizer, valid=proprio_valid))
+        if self.method == "gru_recon_depth":
+            if command is None or command.shape != (*context.shape[:-1], 3):
+                raise ValueError("future depth decoder에는 [..,3] 조건이 필요하다")
+            inputs.append(command)
+        return self.reconstruction_decoder(torch.cat(inputs, dim=-1))
+
     @torch.no_grad()
     def update_ema(self, tau: float) -> None:
         if not 0 <= tau <= 1:
@@ -266,8 +295,10 @@ class StudentInferencePolicy:
         cfg = checkpoint["student_cfg"]
         self.method = cfg["method"]
         self.policy_mode = policy_mode
+        inference_method = ("gru" if self.method in ("gru_recon_depth", "gru_recon_height")
+                            else self.method)
         self.model = StudentDepthModel(
-            method=cfg["method"], image_hw=tuple(cfg["image_hw"]),
+            method=inference_method, image_hw=tuple(cfg["image_hw"]),
             feature_dim=cfg["feature_dim"], context_dim=cfg["context_dim"],
             terrain_dim=cfg["terrain_dim"], terrain_hidden_dim=cfg["terrain_hidden_dim"],
             predictor_hidden_dim=cfg["predictor_hidden_dim"],
@@ -283,7 +314,11 @@ class StudentInferencePolicy:
             mamba_conv_kernel=cfg.get("mamba_conv_kernel", 4),
             mamba_dt_rank=cfg.get("mamba_dt_rank", "auto"),
         ).to(device)
-        self.model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+        state_dict = checkpoint["model_state_dict"]
+        if self.method in ("gru_recon_depth", "gru_recon_height"):
+            state_dict = {key: value for key, value in state_dict.items()
+                          if not key.startswith("reconstruction_decoder.")}
+        self.model.load_state_dict(state_dict, strict=True)
         self.model.eval()
         self.teacher = FrozenCurrentTeacher(checkpoint["teacher_state_dict"]).to(device)
         if latent_noise_std > 0 and (policy_mode != "teacher" or teacher_std is None):

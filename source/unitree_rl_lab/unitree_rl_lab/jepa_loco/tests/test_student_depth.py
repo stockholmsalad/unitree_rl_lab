@@ -13,9 +13,94 @@ from unitree_rl_lab.jepa_loco.models.student_losses import (
     distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, masked_future_mse, normalized_jepa_with_copy,
     normalized_latent_mse,
 )
+from unitree_rl_lab.jepa_loco.models.student_reconstruction import (
+    depth_reconstruction_loss, height_points_visible, normalized_reconstruction_mse,
+)
 from unitree_rl_lab.jepa_loco.envs.oracle_env_cfg import OracleCurrentEasyStartEnvCfg
 from unitree_rl_lab.jepa_loco.envs.student_env_cfg import StudentDepthEasyStartEnvCfg
 from unitree_rl_lab.jepa_loco.agents.student_cfg import StudentTrainCfg
+
+
+def test_reconstruction_shapes_and_inference_has_no_decoder(tmp_path):
+    teacher = _teacher()
+    base = StudentDepthModel(method="gru", proprio_input=True, proprio_window=5)
+    for method in ("gru_recon_depth", "gru_recon_height"):
+        model = StudentDepthModel(method=method, proprio_input=True, proprio_window=5)
+        model.load_state_dict(base.state_dict(), strict=False)
+        assert sum(p.numel() for p in model.parameters()) - sum(
+            p.numel() for p in model.reconstruction_decoder.parameters()
+        ) == sum(p.numel() for p in base.parameters())
+        context = torch.randn(2, 128)
+        policy = torch.randn(2, 5, 45)
+        valid = torch.ones(2, 5, dtype=torch.bool)
+        frame = torch.rand(2, 2, 64, 112)
+        fresh = torch.ones(2, dtype=torch.bool)
+        base_context, _ = base.encode_step(frame, fresh, None, proprio=policy,
+                                            proprio_normalizer=teacher.actor.obs_normalizer,
+                                            proprio_valid=valid)
+        recon_context, _ = model.encode_step(frame, fresh, None, proprio=policy,
+                                              proprio_normalizer=teacher.actor.obs_normalizer,
+                                              proprio_valid=valid)
+        torch.testing.assert_close(base_context, recon_context, rtol=0, atol=0)
+        torch.testing.assert_close(base.terrain_latent(base_context),
+                                   model.terrain_latent(recon_context), rtol=0, atol=0)
+        output = model.reconstruct(context, torch.zeros(2, 3), policy,
+                                   teacher.actor.obs_normalizer, valid)
+        assert output.shape == ((2, 2, 64, 112) if method == "gru_recon_depth" else (2, 187))
+        cfg = StudentTrainCfg(method=method, proprio_input=True, proprio_window=5)
+        path = tmp_path / (method + ".pt")
+        torch.save({"model_state_dict": model.state_dict(), "student_cfg": cfg.to_dict(),
+                    "teacher_state_dict": teacher.actor.state_dict()}, path)
+        inference = StudentInferencePolicy(str(path), torch.device("cpu"))
+        assert inference.model.reconstruction_decoder is None
+        assert all(not key.startswith("reconstruction_decoder.") for key in inference.model.state_dict())
+        obs = TensorDict({"depth": torch.rand(2, 2, 64, 112), "depth_fresh": torch.ones(2, 1),
+                          "policy": torch.rand(2, 45), "terrain_current": torch.rand(2, 187)},
+                         batch_size=[2])
+        baseline = StudentInferencePolicy(str(path), torch.device("cpu"))
+        torch.testing.assert_close(inference(obs), baseline(obs), rtol=0, atol=0)
+    assert base.reconstruction_decoder is None
+
+
+def test_reconstruction_variance_mask_and_zero_samples():
+    target = torch.tensor([[0.0, 5.0], [2.0, 9.0]])
+    pred = target.mean(dim=0).expand_as(target)
+    valid = torch.ones_like(target, dtype=torch.bool)
+    loss, baseline, variance, fraction = normalized_reconstruction_mse(pred, target, valid, 0.05)
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    torch.testing.assert_close(baseline, torch.tensor(1.0))
+    torch.testing.assert_close(variance, torch.tensor(2.5))
+    assert fraction.item() == 1.0
+    empty = normalized_reconstruction_mse(pred, target, torch.zeros_like(valid), 0.05)
+    assert all(torch.isfinite(value) and value.item() == 0 for value in empty)
+    depth_target = torch.zeros(2, 2, 8, 8)
+    depth_target[:, 0] = torch.tensor([0.0, 1.0])[:, None, None]
+    depth_target[:, 1] = 1
+    depth_pred = torch.zeros_like(depth_target)
+    depth_pred[:, 0] = 0.5
+    result = depth_reconstruction_loss(depth_pred, depth_target, 0.05, 1.0, 1.0)
+    assert all(torch.isfinite(value) for value in result)
+    depth_target[:, 1] = 0
+    no_valid = depth_reconstruction_loss(depth_pred, depth_target, 0.05, 1.0, 1.0)
+    assert no_valid[2].item() == no_valid[3].item() == 0
+    truly_empty = depth_reconstruction_loss(depth_pred[:0], depth_target[:0], 0.05, 1.0, 1.0)
+    assert all(torch.isfinite(value) and value.item() == 0 for value in truly_empty)
+
+
+def test_reconstruction_visibility_projection_and_cfg_warmup():
+    point = torch.tensor([[[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]])
+    depth = torch.zeros(1, 2, 8, 8)
+    depth[:, 0] = (1.0 - 0.28) / (2.0 - 0.28)
+    depth[:, 1] = 1
+    visible = height_points_visible(point, depth, (0, 0, 0), 0.0,
+                                    (2.0, 2.0, 3.5, 3.5), 0.28, 2.0, 0.1)
+    assert visible.tolist() == [[True, False]]
+    cfg = StudentTrainCfg(method="gru_recon_depth")
+    assert cfg.effective_lambda_r(0) == 0
+    assert cfg.effective_lambda_r(25) == 0.05
+    assert cfg.effective_lambda_r(50) == 0.1
+    assert cfg.validate_training(0.02, 5) == 25
+    assert StudentTrainCfg(method="gru_recon_height").validate_training(0.02, 5) == 25
 
 
 def _teacher():

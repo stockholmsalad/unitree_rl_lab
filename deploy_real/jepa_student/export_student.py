@@ -10,7 +10,8 @@ import torch
 def export(checkpoint_path, output_prefix):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     cfg = checkpoint["student_cfg"]
-    if cfg["method"] != "gru" or cfg.get("backbone", "gru") != "gru" or cfg.get("proprio_input", False):
+    if (cfg["method"] not in ("gru", "gru_recon_depth", "gru_recon_height") or
+            cfg.get("backbone", "gru") != "gru" or cfg.get("proprio_input", False)):
         raise ValueError("이 export는 depth-only GRU checkpoint 전용이다")
     student = checkpoint["model_state_dict"]
     teacher = checkpoint["teacher_state_dict"]

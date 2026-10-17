@@ -12,7 +12,8 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--teacher_checkpoint", required=True)
 parser.add_argument("--teacher_stats", required=True)
-parser.add_argument("--method", choices=("no_memory", "gru", "gru_jepa", "gru_copy"), required=True)
+parser.add_argument("--method", choices=("no_memory", "gru", "gru_jepa", "gru_copy",
+                                         "gru_recon_depth", "gru_recon_height"), required=True)
 parser.add_argument("--backbone", choices=("gru", "mamba"), default="gru")
 parser.add_argument("--num_envs", type=int, required=True)
 parser.add_argument("--max_iterations", type=int, required=True)
@@ -26,6 +27,12 @@ parser.add_argument("--jepa_target", choices=("context", "frame_embedding"))
 parser.add_argument("--lambda_j", type=float)
 parser.add_argument("--jepa_warmup_iterations", type=int)
 parser.add_argument("--jepa_variance_floor", type=float)
+parser.add_argument("--lambda_r", type=float)
+parser.add_argument("--recon_warmup_iterations", type=int)
+parser.add_argument("--recon_variance_floor", type=float)
+parser.add_argument("--recon_height_variance_floor", type=float)
+parser.add_argument("--recon_depth_weight", type=float)
+parser.add_argument("--recon_mask_weight", type=float)
 parser.add_argument("--proprio_input", action="store_true")
 parser.add_argument("--proprio_hidden_dims", type=int, nargs="+", default=None)
 parser.add_argument("--proprio_window", type=int, default=None)
@@ -53,13 +60,18 @@ from unitree_rl_lab.jepa_loco.models.student_batches import (  # noqa: E402
 from unitree_rl_lab.jepa_loco.models.student_losses import (  # noqa: E402
     distillation_losses, jepa_fresh_pair_mask, jepa_valid_mask, normalized_jepa_with_copy,
 )
+from unitree_rl_lab.jepa_loco.models.student_reconstruction import (  # noqa: E402
+    depth_reconstruction_loss, height_points_visible, normalized_reconstruction_mse,
+)
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
 
 def main() -> None:
     overrides = {key: value for key in ("num_mini_batches", "num_learning_epochs",
                                          "jepa_target_mode", "condition_source", "jepa_target", "lambda_j",
-                                         "jepa_warmup_iterations", "jepa_variance_floor")
+                                         "jepa_warmup_iterations", "jepa_variance_floor",
+                                         "lambda_r", "recon_warmup_iterations", "recon_variance_floor", "recon_height_variance_floor",
+                                         "recon_depth_weight", "recon_mask_weight")
                  if (value := getattr(args, key)) is not None}
     if args.no_init_at_random_ep_len:
         overrides["init_at_random_ep_len"] = False
@@ -102,7 +114,15 @@ def main() -> None:
         backbone=train.backbone, mamba_intermediate_size=train.mamba_intermediate_size,
         mamba_state_size=train.mamba_state_size, mamba_conv_kernel=train.mamba_conv_kernel,
         mamba_dt_rank=train.mamba_dt_rank,
+        recon_hidden_dim=train.recon_hidden_dim, recon_seed_channels=train.recon_seed_channels,
+        recon_height_hidden_dim=train.recon_height_hidden_dim, heightmap_dim=train.heightmap_dim,
     ).to(device)
+    if model.reconstruction_decoder is not None:
+        recon_count = sum(p.numel() for p in model.reconstruction_decoder.parameters())
+        predictor_count = sum(p.numel() for p in model.predictor.parameters())
+        ema_projection_count = sum(p.numel() for p in model.ema_frame_projection.parameters())
+        print(f"RECON_PARAMS decoder={recon_count} jepa_predictor_plus_ema_projection="
+              f"{predictor_count + ema_projection_count}", flush=True)
     optimizer = torch.optim.Adam((p for p in model.parameters() if p.requires_grad),
                                  lr=train.learning_rate)
     output = Path(args.output_dir)
@@ -120,6 +140,8 @@ def main() -> None:
         beta = train.dagger_beta(iteration)
         lambda_j = (train.effective_lambda_j(iteration)
                     if train.method in ("gru_jepa", "gru_copy") else 0.0)
+        lambda_r = (train.effective_lambda_r(iteration)
+                    if train.method in ("gru_recon_depth", "gru_recon_height") else 0.0)
         h0 = state.detach().clone()
         h0_ema = ema_state.detach().clone()
         if proprio_history is not None:
@@ -129,6 +151,11 @@ def main() -> None:
                                        "teacher_action", "done")}
         if train.condition_source == "realized_displacement" and train.method in ("gru_jepa", "gru_copy"):
             memory["pose"] = []
+        if train.method == "gru_recon_depth" and train.condition_source == "realized_displacement":
+            memory["pose"] = []
+        if train.method == "gru_recon_height":
+            memory["height"] = []
+            memory["height_visible"] = []
         metrics = {}
         teacher_action_count = torch.zeros((), device=device)
         timeout_any = torch.zeros(env.num_envs, dtype=torch.bool, device=device)
@@ -143,10 +170,11 @@ def main() -> None:
                                                    proprio=policy_input,
                                                    proprio_normalizer=teacher.actor.obs_normalizer,
                                                    proprio_valid=policy_valid)
-                _, ema_state = model.encode_step(obs["depth"], fresh, ema_state, target=True,
-                                                  proprio=policy_input,
-                                                  proprio_normalizer=teacher.actor.obs_normalizer,
-                                                  proprio_valid=policy_valid)
+                if train.method not in ("gru_recon_depth", "gru_recon_height"):
+                    _, ema_state = model.encode_step(obs["depth"], fresh, ema_state, target=True,
+                                                      proprio=policy_input,
+                                                      proprio_normalizer=teacher.actor.obs_normalizer,
+                                                      proprio_valid=policy_valid)
                 student_z = model.terrain_latent(context)
                 teacher_z = teacher.terrain_latent(obs["terrain_current"])
                 student_action = teacher.action_from_latent(obs["policy"], student_z)
@@ -164,6 +192,20 @@ def main() -> None:
                     memory["pose"].append(torch.cat((robot.root_pos_w[:, :2], yaw[:, None]), dim=-1).clone())
                 memory["teacher_z"].append(teacher_z.clone())
                 memory["teacher_action"].append(teacher_action.clone())
+                if train.method == "gru_recon_height":
+                    memory["height"].append(obs["terrain_current"].clone())
+                    robot_data = env.scene["robot"].data
+                    hits = env.scene.sensors["height_scanner"].data.ray_hits_w
+                    points_b = math_utils.quat_apply_inverse(
+                        robot_data.root_quat_w[:, None, :].expand(-1, hits.shape[1], -1),
+                        hits - robot_data.root_pos_w[:, None, :],
+                    )
+                    camera = env_cfg.camera
+                    memory["height_visible"].append(height_points_visible(
+                        points_b, obs["depth"], camera.depth_origin_in_base,
+                        camera.pitch_down_deg, camera.intrinsics(camera.render_wh),
+                        camera.min_range, camera.clip_far, train.recon_visibility_tolerance_m,
+                    ))
                 obs, _, terminated, truncated, extras = env.step(action)
                 done = (terminated | truncated).bool()
                 timeout_any |= truncated.bool()
@@ -184,7 +226,7 @@ def main() -> None:
         resets = torch.zeros_like(batch["done"])
         resets[1:] = batch["done"][:-1]
         mask_all = None
-        if train.method in ("gru_jepa", "gru_copy"):
+        if train.method in ("gru_jepa", "gru_copy", "gru_recon_depth"):
             mask_all = jepa_valid_mask(batch["done"], batch["command"],
                                        horizon_steps, train.command_tolerance)
             # 두 target을 동일한 새 목표 프레임 시점에서 비교한다.
@@ -194,6 +236,10 @@ def main() -> None:
                        "Diagnosis/jepa_copy_loss", "Diagnosis/jepa_copy_online_loss",
                        "Diagnosis/jepa_target_var", "Diagnosis/jepa_online_context_var",
                        "Diagnosis/jepa_var_floor_active_frac")
+        if train.method in ("gru_recon_depth", "gru_recon_height"):
+            update_keys += ("Loss/recon", "Diagnosis/recon_mean_baseline",
+                            "Diagnosis/recon_target_var", "Diagnosis/recon_valid_fraction",
+                            "Diagnosis/recon_visible_error", "Diagnosis/recon_hidden_error")
         sums = {key: 0.0 for key in update_keys}
         for _ in range(train.num_learning_epochs):
             env_batches = env_batch_indices(env.num_envs, train.num_mini_batches, device, shuffle=True)
@@ -218,7 +264,13 @@ def main() -> None:
                 target_var = context.new_zeros(())
                 online_context_var = context.new_zeros(())
                 floor_frac = context.new_zeros(())
-                if mini_mask is not None:
+                recon_loss = context.new_zeros(())
+                recon_baseline = context.new_zeros(())
+                recon_var = context.new_zeros(())
+                recon_valid = context.new_zeros(())
+                visible_error = context.new_zeros(())
+                hidden_error = context.new_zeros(())
+                if train.method in ("gru_jepa", "gru_copy") and mini_mask is not None:
                     with torch.no_grad():
                         if train.jepa_target == "context":
                             ema_context, _ = model.encode_sequence(
@@ -252,7 +304,54 @@ def main() -> None:
                         pred, source, source_ema, target, mini_mask,
                         train.jepa_variance_floor,
                     )
-                total = train.lambda_z * latent_loss + train.lambda_a * action_loss + lambda_j * jepa_loss
+                if train.method == "gru_recon_depth" and mini_mask is not None and mini_mask.any():
+                    source, _, condition = jepa_pair_tensors(
+                        context, context, mini["command"], mini.get("pose"), horizon_steps,
+                        train.jepa_target_mode, train.condition_source,
+                    )
+                    source_policy, source_valid = mini["policy"][:-horizon_steps], None
+                    if proprio_history is not None:
+                        windows, valids = proprio_windows(
+                            mini["policy"], mini_resets,
+                            mini["proprio_prefix"], mini["proprio_prefix_valid"],
+                        )
+                        source_policy, source_valid = windows[:-horizon_steps], valids[:-horizon_steps]
+                    prediction = model.reconstruct(
+                        source[mini_mask], condition[mini_mask], source_policy[mini_mask],
+                        teacher.actor.obs_normalizer,
+                        None if source_valid is None else source_valid[mini_mask],
+                    )
+                    recon_loss, recon_baseline, recon_var, recon_valid = depth_reconstruction_loss(
+                        prediction, mini["depth"][horizon_steps:][mini_mask].float(),
+                        train.recon_variance_floor, train.recon_depth_weight,
+                        train.recon_mask_weight,
+                    )
+                elif train.method == "gru_recon_height":
+                    current_policy, current_valid = mini["policy"], None
+                    if proprio_history is not None:
+                        current_policy, current_valid = proprio_windows(
+                            mini["policy"], mini_resets,
+                            mini["proprio_prefix"], mini["proprio_prefix_valid"],
+                        )
+                    prediction = model.reconstruct(
+                        context, proprio=current_policy,
+                        proprio_normalizer=teacher.actor.obs_normalizer,
+                        proprio_valid=current_valid,
+                    )
+                    pred_flat = prediction.flatten(0, 1)
+                    target_flat = mini["height"].flatten(0, 1).float()
+                    recon_loss, recon_baseline, recon_var, recon_valid = normalized_reconstruction_mse(
+                        pred_flat, target_flat, torch.ones_like(target_flat, dtype=torch.bool),
+                        train.recon_height_variance_floor,
+                    )
+                    with torch.no_grad():
+                        scale = target_flat.var(dim=0, unbiased=False).clamp_min(train.recon_height_variance_floor)
+                        errors = (pred_flat.detach() - target_flat).square() / scale
+                        visible = mini["height_visible"].flatten(0, 1)
+                        visible_error = errors[visible].mean() if visible.any() else errors.new_zeros(())
+                        hidden_error = errors[~visible].mean() if (~visible).any() else errors.new_zeros(())
+                total = (train.lambda_z * latent_loss + train.lambda_a * action_loss +
+                         lambda_j * jepa_loss + lambda_r * recon_loss)
                 optimizer.zero_grad(set_to_none=True)
                 total.backward()
                 torch.nn.utils.clip_grad_norm_(
@@ -260,13 +359,17 @@ def main() -> None:
                 )
                 optimizer.step()
                 # EMA target이 방금 변경된 online encoder를 바로 따라가도록 매 step 갱신한다.
-                model.update_ema(train.ema_tau)
+                if train.method not in ("gru_recon_depth", "gru_recon_height"):
+                    model.update_ema(train.ema_tau)
                 values = (latent_loss.item(), action_loss.item(), jepa_loss.item(), total.item(),
                           (student_action.detach() - mini["teacher_action"]).abs().mean().item(),
                           (student_z.detach() - mini["teacher_z"]).abs().mean().item(),
                           student_z.detach().std(dim=(0, 1)).mean().item(),
                           copy_loss.item(), copy_online_loss.item(), target_var.item(),
                           online_context_var.item(), floor_frac.item())
+                if train.method in ("gru_recon_depth", "gru_recon_height"):
+                    values += (recon_loss.item(), recon_baseline.item(), recon_var.item(),
+                               recon_valid.item(), visible_error.item(), hidden_error.item())
                 for key, value in zip(update_keys, values):
                     sums[key] += value
         state = state.detach()
@@ -288,6 +391,15 @@ def main() -> None:
                      "DAgger/beta": beta,
                      "DAgger/teacher_action_rate": teacher_action_count.item() / (env.num_envs * train.rollout_steps),
                      "Perf/optimizer_steps": update_count, **metrics})
+        if train.method in ("gru_recon_depth", "gru_recon_height"):
+            logs["Loss/lambda_r"] = lambda_r
+            logs["Diagnosis/recon_over_mean"] = (
+                logs["Loss/recon"] / logs["Diagnosis/recon_mean_baseline"]
+                if logs["Diagnosis/recon_mean_baseline"] > 0 else 1.0
+            )
+            logs["Diagnosis/recon_mask_coverage"] = (
+                mask_all.float().mean().item() if mask_all is not None else 1.0
+            )
         if device.type == "cuda":
             logs["Perf/gpu_peak_allocated_gib"] = torch.cuda.max_memory_allocated(device) / 2**30
             logs["Perf/gpu_peak_reserved_gib"] = torch.cuda.max_memory_reserved(device) / 2**30
@@ -309,6 +421,7 @@ def main() -> None:
               f"timeout_env_frac={logs['Rollout/timeout_env_fraction']:.3f} "
               f"max_timeout_step_frac={logs['Rollout/max_timeout_step_fraction']:.3f} "
               f"teacher_rate={logs['DAgger/teacher_action_rate']:.3f} updates={update_count} "
+              f"recon={logs.get('Loss/recon', 0.0):.5f} lambda_r={lambda_r:.4f} "
               f"peak_gib={logs.get('Perf/gpu_peak_allocated_gib', 0.0):.2f} "
               f"iteration_s={logs['Perf/iteration_s']:.2f}", flush=True)
         if (iteration + 1) % train.save_interval == 0 or iteration + 1 == train.max_iterations:

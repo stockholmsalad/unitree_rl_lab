@@ -24,6 +24,17 @@ class StudentTrainCfg:
     lambda_z: float = 1.0
     lambda_a: float = 1.0
     lambda_j: float = 0.1
+    lambda_r: float = 0.1
+    recon_warmup_iterations: int = 50
+    recon_variance_floor: float = 0.05
+    # 높이맵은 실제 지형 목표라 EMA 붕괴가 없다. 초기 평지 batch 분산이 ~1e-4라 0.05 하한은 손실을 수백 배 줄인다.
+    recon_height_variance_floor: float = 1.0e-4
+    recon_depth_weight: float = 1.0
+    recon_mask_weight: float = 1.0
+    recon_hidden_dim: int = 64
+    recon_seed_channels: int = 4
+    recon_height_hidden_dim: int = 256
+    recon_visibility_tolerance_m: float = 0.10
     jepa_warmup_iterations: int = 50
     init_at_random_ep_len: bool = True
     jepa_horizon_s: float = 0.5
@@ -44,6 +55,7 @@ class StudentTrainCfg:
     feature_dim: int = 128
     context_dim: int = 128
     terrain_dim: int = 32
+    heightmap_dim: int = 187
     terrain_hidden_dim: int = 128
     predictor_hidden_dim: int = 128
     proprio_input: bool = False
@@ -55,7 +67,8 @@ class StudentTrainCfg:
     cnn_strides: tuple[int, ...] = (2, 2, 2)
 
     def validate_training(self, control_dt: float, depth_period_steps: int) -> int:
-        if self.method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
+        if self.method not in ("no_memory", "gru", "gru_jepa", "gru_copy",
+                               "gru_recon_depth", "gru_recon_height"):
             raise ValueError("지원하지 않는 student 비교군")
         if self.backbone not in ("gru", "mamba") or (self.method == "no_memory" and self.backbone == "mamba"):
             raise ValueError("backbone은 gru/mamba이고 no_memory에는 mamba를 쓸 수 없다")
@@ -66,8 +79,13 @@ class StudentTrainCfg:
             raise ValueError("Mamba 크기와 dt_rank가 올바르지 않다")
         if self.train_new_head or not self.use_frozen_teacher_head or self.enable_future_terrain_distill:
             raise NotImplementedError("새 head·future terrain은 확정 후 별도 ablation으로 구현한다")
-        if min(self.lambda_z, self.lambda_a, self.lambda_j) < 0:
+        if min(self.lambda_z, self.lambda_a, self.lambda_j, self.lambda_r) < 0:
             raise ValueError("손실 계수는 0 이상이어야 한다")
+        if (self.recon_warmup_iterations < 0 or min(self.recon_variance_floor, self.recon_height_variance_floor) <= 0 or
+                min(self.recon_depth_weight, self.recon_mask_weight) < 0 or
+                min(self.recon_hidden_dim, self.recon_seed_channels, self.recon_height_hidden_dim) < 1 or
+                self.recon_visibility_tolerance_m < 0):
+            raise ValueError("복원 보조 손실 설정이 올바르지 않다")
         if self.jepa_warmup_iterations < 0:
             raise ValueError("JEPA warmup iteration은 0 이상이어야 한다")
         if self.jepa_target not in ("context", "frame_embedding"):
@@ -106,3 +124,8 @@ class StudentTrainCfg:
         if self.jepa_warmup_iterations == 0:
             return self.lambda_j
         return self.lambda_j * min(max(iteration, 0) / self.jepa_warmup_iterations, 1.0)
+
+    def effective_lambda_r(self, iteration: int) -> float:
+        if self.recon_warmup_iterations == 0:
+            return self.lambda_r
+        return self.lambda_r * min(max(iteration, 0) / self.recon_warmup_iterations, 1.0)

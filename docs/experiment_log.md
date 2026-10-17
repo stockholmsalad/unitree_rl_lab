@@ -1,5 +1,15 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-17 — Phase 3 student 복원 기준선 준비
+
+졸업논문의 사각지대 기억 주장에 대해 잠재공간 예측과 픽셀·높이맵 복원을 직접 비교한다. 같은 teacher 17000, CNN, 5스텝 고유수용감각 창, seed 43을 사용한다. 기존 `gru_propw5`(보조 손실 없음)·`gru_jepa_propw5`(미래 EMA 임베딩 예측)에 `gru_recon_depth`와 `gru_recon_height`를 추가했다. decoder는 학습 전용이며 `StudentInferencePolicy`는 decoder 가중치를 제외하고 기존 GRU/Mamba·terrain head와 고정 teacher head만 읽는다. 기존 depth-only NumPy export도 decoder를 선택하지 않는다. 현재 Orin NumPy export는 고유수용감각 입력 모델을 지원하지 않는 기존 제한이 있다.
+
+- **미래 depth:** JEPA와 같은 0.5초 horizon, 같은 에피소드·명령 유지·새 목표 프레임 mask와 같은 `[h_t,p̄_t,condition]`을 사용한다. MLP→transposed conv로 2채널 64×112를 복원한다. 목표는 전처리·노이즈 적용 후 학습 관측이다. 유효 depth 픽셀만 차원별 배치 분산 정규화 MSE에 넣고, validity는 BCE(logit)로 학습한다. BCE의 상수 기준은 유효 비율의 Bernoulli 엔트로피다. 기본 depth/mask 비율은 1:1이다. EMA target forward/update는 복원 method에서 실행하지 않는다. decoder 파라미터 수와 JEPA predictor+EMA projection 수를 실행 로그에 함께 출력한다.
+- **현재 높이맵:** 매 제어 스텝의 `terrain_current` 187점을 `[h_t,p̄_t]`로부터 MLP로 복원한다. 같은 높이맵의 teacher latent를 이미 `L_z`로 증류하는 위에 명시적 전체 해상도 복원을 더한다. 동일 시점이므로 미래 JEPA 쌍의 episode·명령 유지 mask는 필요하지 않으며 유효 표본은 현재 에피소드의 모든 제어 스텝이다. 기존 사각지대 도구의 카메라 투영과 렌더 depth 일치 정의를 GPU로 구현해 현재 프레임에서 보이는/안 보이는 점의 정규화 복원 오차를 따로 기록한다.
+- 주 손실 λ_z=1·λ_a=1, DAgger, 100스텝 TBPTT, 4 mini batch×2 epoch는 유지한다. λ_R 기본 0.1은 첫 50 iteration 동안 0→0.1로 증가한다. 분산 하한은 미래 depth `--recon_variance_floor` 기본 0.05, 현재 높이맵 `--recon_height_variance_floor` 기본 1e-4이며, 이 값들과 decoder 크기·depth/mask 비율은 configclass에 노출한다. 목표 차원별 유효 표본 분산을 쓰므로 상수 평균 예측의 정규화 MSE는 분산 하한이 비활성인 경우 1이다. `Loss/recon`, `Loss/lambda_r`, 상수 대비 비율·목표 분산·유효 비율을 로깅한다.
+
+**사전 비교 규칙:** 기존 propw5 고정 평가를 쓴다. checkpoint 3000은 오르기·내리기·비정형·평지, 2500/2800은 오르기만 평가하며 연속 코스도 보조 평가한다. 주 지표는 오르기 14/15 cm의 2500·2800·3000 평균이다. 내리기 17~20 cm, 비정형 10/12 cm, 연속 코스 14 cm는 보조 지표다. `gru_jepa_propw5`가 depth 복원보다 주 지표에서 높을 때만 "잠재 예측이 픽셀 예측보다 낫다", height 복원보다 높을 때만 "명시적 복원보다 낫다"고 한다. 차이가 5%p 미만이면 차이 없음이며 모든 결론은 **seed 43 단일**로 한정한다. 성능 결과는 아직 없다. 본 학습은 시작하지 않았다.
+
 ## 2026-10-17 — Teacher v3 명령 방향 진행 보상 준비
 
 **배경·결정:** 고정 teacher `model_17000.pt`의 큰 계단 실패는 주로 장애물 앞 정지다. v2 TightTrack(std 0.25)은 사전 판정 기준을 통과하지 못했다(`results/jepa_loco/teacher_v2/eval/summary.md`): 내리기 20 cm는 두 run 모두 0~2%였고 학습 중 정지 비율과 평지 속도 오차가 std 0.5 대조군보다 나빴다. 좁은 Gaussian은 정지와 느린 전진 모두 보상 약 0으로 만들 수 있다는 가설이다. 기존 Gaussian(std 0.5, weight 1.5)을 유지하고 명령 방향 진행 보상 **하나만** 새 task에 추가한다. 학습 지형·명령·PPO·관측은 유지한다.
@@ -1395,6 +1405,19 @@ iteration 0/1의 `Loss/jepa`는 **2281.232 / 4723.199**,
 기록했고 이 스모크에서 계수나 정규화 방식을 바꾸지 않았다.
 Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하지 않았다.
 
+## 2026-10-16 — 실기 D435i 장착을 학습값에 맞춤
+
+- 학습값(`d435i_cfg.py`): depth 원점 base 기준 (0.328, 0, 0.058) m, pitch 30°, HFOV 87°(112×64 수직 약 57°).
+  URDF 메시 그림(`results/jepa_loco/camera_mount/camera_mount_current.png`)에서 이 위치의 하우징
+  (90×25×25 mm) 뒤쪽이 Go2 머리 메시 안에 들어감을 확인했다. 실기 카메라는 머리 위·앞으로
+  1~2 cm 벗어나 장착된다.
+- 사용자가 처음 단 각도는 로봇 앞 끝 기준 바닥 16 cm부터·2 m 앞 물체는 아래쪽만 보이는 상태로
+  pitch 약 40°로 추정됐다. 재학습을 피하고 원고의 30° 사각지대 정량화와 맞추기 위해 30°로 다시 달았다.
+- 평지 확인(사용자, 로봇 앞 끝 기준): 바닥 시야 시작 약 20 cm, depth 영상 정중앙의 바닥 약 58 cm,
+  2 m 앞 판은 바닥에서 약 28 cm 높이까지 보임 — 세 값 모두 시뮬 계산값과 거의 같았다.
+- 남은 일: dx·dz 자 실측, 실기 depth 녹화로 intrinsic·통계 비교(`deploy_real/read_intrinsics.py`,
+  `scripts/jepa_loco/compare_depth_stats.py`). 카메라 위치·pitch 랜덤화(§6 ±2 cm, ±3°)는 아직 미구현.
+
 ## 2026-10-16 — depth-only GRU student의 Orin NX NumPy 배포 준비
 
 - 대상은 teacher 17000의 `gru_t17000_s43/model_3000.pt`다. 정책·학습 환경·checkpoint는 바꾸지 않고 추론용 CNN, GRU, terrain head, teacher 관측 정규화기와 고정 head만 `.npz`/`.json`으로 export한다. predictor·EMA·heightmap encoder는 제외한다.
@@ -1414,3 +1437,4 @@ Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하�
 - Z790에서 Isaac 앱 내부 테스트 168개 통과. 최종 지형의 3개 높이×4 env 실제 USD ray 감사 통과(설계 단면 최대 오차 0.00235 m). 감사 JSON과 단면 그림은 `results/jepa_loco/course_eval/smoke/terrain_audit_4x3*`에 보관한다. teacher 17000 3개 높이×4 env 영상 스모크는 JSON·영상·구간별 기록을 생성했다(`smoke/teacher_course_4x3*`). 이는 실행 경로 점검이며 본 평가 결과가 아니다.
 - 같은 설정의 depth-only GRU student 스모크도 JSON·구간별 기록을 생성했다(`smoke/gru_course_4x3.json`). 이 소수 env 재생으로 모델 간 성능을 판단하지 않는다.
 - 영상은 viewer env의 판정이 확정된 스텝에서 종료하도록 했다. 최종 teacher 영상 스모크(`smoke/teacher_video_stop_4x3*`)에서 env 0 성공 후 영상 길이 24.56 s였고, 영상 종료 전후 12 env의 성공 판정은 동일했다. 평가 자체는 다른 env의 종료까지 계속됐다.
+- **높이맵 분산 하한 수정 (스모크 후):** 256 env·20 iteration에서 높이맵 목표의 batch 분산은 약 1e-4였다. 하한 0.05를 쓰면 손실이 평균 예측 기준의 약 0.002배까지 줄어 λ_R의 실효값이 수백 분의 1이 됐다. 높이맵만 하한을 1e-4로 분리한 뒤 평균 예측 대비 비율은 iteration 20에 2.0이고 감소 중이다. 같은 스모크: peak 2.4 GiB, 약 6.1 s/iter. 미래 depth: peak 5.6 GiB, 약 7.4 s/iter, decoder 42,830개(JEPA predictor+EMA projection 41,600개), iteration 20 평균 예측 대비 1.59.
