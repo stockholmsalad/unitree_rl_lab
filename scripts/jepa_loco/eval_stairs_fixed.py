@@ -21,9 +21,12 @@ if __name__ == "__main__":
     ), required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--terrain", choices=("stairs", "stairs_down", "flat", "gap", "rough"), default="stairs")
+    parser.add_argument("--terrain", choices=("stairs", "stairs_down", "flat", "gap", "rough", "course"), default="stairs")
     parser.add_argument("--step_heights_m", type=float, nargs="+", default=None)
     parser.add_argument("--rough_max_heights_m", type=float, nargs="+", default=None)
+    parser.add_argument("--course_step_heights_m", type=float, nargs="+", default=None)
+    parser.add_argument("--course_slope_deg", type=float, default=None)
+    parser.add_argument("--course_heading_hold", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--spawn_forward_m", type=float, default=None)
     parser.add_argument("--episode_steps", type=int, default=None)
     parser.add_argument("--boundary_stop_forward_m", type=float, default=None)
@@ -256,6 +259,9 @@ def main(args=None, *, step_heights_m: tuple[float, ...] | None = None,
          policy_factory=None, latent_stats=None):
     if args is None:
         args = globals()["args"]
+    if args.terrain == "course":
+        from eval_course_fixed import run_course_eval
+        return run_course_eval(args, policy_factory=policy_factory, latent_stats=latent_stats)
     if step_heights_m is None and getattr(args, "step_heights_m", None) is not None:
         step_heights_m = tuple(args.step_heights_m)
     cfg = StairEvalCfg()

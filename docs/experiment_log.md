@@ -1392,3 +1392,12 @@ Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하�
 - Z790: checkpoint export 성공. NumPy/PyTorch 205스텝 fresh/reset 포함 행동 최대 오차는 단위 테스트에서 1e-4 이하. `flat_stand` 16UC1 PNG 3장의 전처리 출력은 PyTorch 기준과 atol 1e-6에서 일치. 150스텝 가짜 lowstate 오프라인 dry-run은 평균 지연 1.3 ms, p99 25.4 ms, 20 ms 초과 3회였다. 이는 Z790 수치이고 Orin 실시간성을 보증하지 않는다. 배포 단위 테스트 11개(합성 NPZ 재생·C++ CRC 대조 포함)와 Isaac 앱 내부 기존 테스트 164개가 통과했다.
 - 시뮬 평가에 `--record_rollout` 옵션을 추가해 policy/depth/fresh/reset/action을 최대 4 env 기록하고 NumPy로 재생할 수 있게 했다. 짧은 Isaac Sim 평지 평가가 현재 도구 세션에서 JSON/NPZ 없이 종료되어 시뮬 rollout 재생 일치는 아직 확인하지 못했다. 실기 동작 결과는 아직 없다.
 - 이 Z790 셸에는 Python 3.8 실행 파일이 없고 `env_test`의 NumPy는 1.26.0이다. 모든 Orin 파일은 Python 3.8 AST 문법 검사와 NumPy 1.17에 존재하는 API만 썼지만, 정확한 Orin 버전에서의 import/실시간성은 현장 dry-run으로 확인해야 한다.
+
+## 2026-10-17 — 연속 지형 코스 보조 평가 설계
+
+- 기존 단일 지형 고정 평가는 유지한다. 새 `--terrain course`는 출발 평지 2.0 m, 10° 경사 2.0 m, 평지 1.5 m, 오르기 4단(폭 0.3 m), 평지 1.5 m, 내리기 4단, 평지 1.5 m, 학습 rough 규칙의 비정형 3.0 m, 도착 평지 1.5 m 순서다. 계단 높이 기본 10/12/14 cm, 폭 4 m, 출발은 타일 시작 +1.0 m다. 35초·0.6 m/s 직진에 yaw 0 유지 명령(`k=1`, 한계 ±0.3 rad/s)을 사용한다. 경사로는 teacher 학습에 없으므로 일반화 지표로 별도 해석한다.
+- 하나의 heightfield에서 모든 구간을 만든다. IsaacLab 학습 지형과 같은 격자 0.1 m, 수직 양자화 0.005 m, `slope_threshold=0.75`를 쓴다. 10° 경사 기울기 약 0.176은 유지되고 10~14 cm 계단의 격자 간 기울기 1.0~1.4는 수직면으로 보정된다. 비정형 구간은 IsaacLab `HfRandomUniformTerrainCfg` 원본 raw 함수의 noise 0.01~0.06 m, step 0.01 m, border 0.25 m, downsample 기본 `None`(0.1 m)을 사용한다. 지형 원점 z는 출발 평지 0으로 둔다.
+- 모든 타일의 USD 메시를 수직 ray로 검사하고 비정형 이외 설계 높이와 비교한다. 허용 오차 기본 0.015 m이며 단면 PNG를 저장한다. 성공은 도착 평지 시작 +0.5 m 이상에서 25 제어 스텝 유지, 실패는 비시간초과 종료(fall), 시간초과/평가 끝(stall), 중앙 출발 y에서 폭/2−0.3 m 초과 이탈(off_course)이다. 성공 이후 집계는 멈춘다. 구간별 최초 통과 스텝·속도·추종 오차·정지율·최대 횡 이탈을 JSON에 남긴다.
+- `results/jepa_loco/course_eval/run_course.sh`는 teacher 17000과 student 다섯 종류의 model_3000을 seed 43, 높이당 128 env로 평가하며 기존 JSON을 건너뛴다. 이 본 평가는 이번 구현 단계에서 실행하지 않는다. 결과 해석이나 성능 주장은 아직 하지 않는다.
+- Z790에서 Isaac 앱 내부 테스트 168개 통과. 최종 지형의 3개 높이×4 env 실제 USD ray 감사 통과(설계 단면 최대 오차 0.00235 m). 감사 JSON과 단면 그림은 `results/jepa_loco/course_eval/smoke/terrain_audit_4x3*`에 보관한다. teacher 17000 3개 높이×4 env 영상 스모크는 JSON·영상·구간별 기록을 생성했다(`smoke/teacher_course_4x3*`). 이는 실행 경로 점검이며 본 평가 결과가 아니다.
+- 같은 설정의 depth-only GRU student 스모크도 JSON·구간별 기록을 생성했다(`smoke/gru_course_4x3.json`). 이 소수 env 재생으로 모델 간 성능을 판단하지 않는다.
