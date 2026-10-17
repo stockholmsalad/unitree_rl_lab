@@ -1,5 +1,17 @@
 # 실험 로그 — JEPA-Locomotion (CLAUDE.md 명세)
 
+## 2026-10-17 — Teacher v3 명령 방향 진행 보상 준비
+
+**배경·결정:** 고정 teacher `model_17000.pt`의 큰 계단 실패는 주로 장애물 앞 정지다. v2 TightTrack(std 0.25)은 사전 판정 기준을 통과하지 못했다(`results/jepa_loco/teacher_v2/eval/summary.md`): 내리기 20 cm는 두 run 모두 0~2%였고 학습 중 정지 비율과 평지 속도 오차가 std 0.5 대조군보다 나빴다. 좁은 Gaussian은 정지와 느린 전진 모두 보상 약 0으로 만들 수 있다는 가설이다. 기존 Gaussian(std 0.5, weight 1.5)을 유지하고 명령 방향 진행 보상 **하나만** 새 task에 추가한다. 학습 지형·명령·PPO·관측은 유지한다.
+
+**구현:** `Unitree-Go2-JepaLoco-OracleCurrent-EasyStart-Progress`(+ PLAY)에서만 `track_lin_vel_progress`를 weight 1.0으로 켰다. 기존 task의 reward cfg에는 항 자체가 없다. 몸통 좌표계 `c,v`에 대해 `||c||≥0.1`이면 `clip((v·c)/||c||², −1, 1)`, 작은 명령이면 `exp(−||c−v||²/0.5²)`다. 20초에서 새 항 최대 +20이며 Gaussian 최대 +30보다 작다. 기존 `OracleProgressCfg`가 이미 장애물 통과 진단 설정 이름이라, 이 configclass에 weight·command_threshold·std_small·min_reward를 추가해 노출했다. 지형별 종료 에피소드의 새 보상 합 평균을 기존 추종 보상·속도 오차·정지 비율과 함께 기록한다. 기존 레벨별 통과·종료 로그는 유지한다.
+
+**대조군·재현:** v2 std 0.5 대조군의 평가 JSON과 `logs/rsl_rl/teacher_v2/std05_model_{18000,18500,19000,19500,20000}.pt`를 재사용한다. 로컬 `std05_model_18000.pt`에는 actor·critic·optimizer 및 `iter=18000`이 있다. v2 설계 기록은 seed 42·동일 `model_17000.pt` 직접 경로 resume다. **원본 pilab 학습 로그와 params 파일은 로컬에 없어 실제 대조군 실행 명령·seed는 독립 검증하지 못했다.** 평가 전에 원본 로그/params를 가져와 이 조건을 확인한다. 이번 새 run은 같은 resume 코드와 seed 42를 쓴다. `common_step_counter=17000×100`, 첫 iteration 17001, 3000 update 후 20000, 저장 간격 500이다.
+
+**검증:** Isaac 앱 내부 전체 테스트 **170개 통과**. 순수 함수에서 정지 0·명령 속도 1·2배 속도 1·역방향 음수 및 하한 −1·직교 0·횡 명령 1·작은 명령 Gaussian을 확인했다. 기존/신규 cfg의 차이가 새 reward 항 하나뿐이며 Gaussian std=0.5, 다른 보상·지형·명령·PPO가 같은 것을 확인했다. Z790에서 `teacher_cont_s42/model_17000.pt`로 64 env×5 iteration resume 스모크 완료: 로그에 `common_step_counter=1,700,000`, 첫/끝 iteration 17001/17005, `model_17005.pt` 저장을 확인했다. 새 보상 스텝별 극값은 −0.0200~+0.0200(가중치×dt)였고, 지형별 `episode_track_lin_vel_progress_reward` 로그가 생성됐다. 64 env 스모크 수치는 성능 결과로 해석하지 않는다.
+
+**사전 평가·판정:** 기존 EasyStart 평가 task, seed 43, 높이당 128 env로 18000/18500/19000/19500/20000을 비교한다. 오르기 9~15 cm, 내리기 15~20 cm, 비정형 6/8/10/12 cm 및 평지다. 채택에는 오르기 14·15 및 내리기 19·20 cm 성공률이 같은 checkpoint의 대조군 평균보다 높고, timeout 감소가 원인이며 높이별 낙상이 17000 대비 5%p 이상 늘지 않아야 한다. 비정형 10·12 cm 성공률/속도 오차는 17000 대비 각각 5%p/20% 이상 악화되지 않고 평지 100%여야 한다. 상위 checkpoint를 seed 44로 재평가하고 사용자가 play 영상에서 정상 보행을 확인해야 한다. 연속 코스는 보조 지표이며 판정에는 넣지 않는다. 미충족이면 17000을 유지하고 음성 결과로 기록한다. **teacher 교체는 아직 결정하지 않았다. 본 학습은 시작하지 않았다.**
+
 ## 2026-10-15 — Depth-only student의 FLA Mamba-1 시간축 backbone 준비
 
 사용자 결정: teacher 17000·student seed 43의 checkpoint 2500/2800/3000 고정 평가 평균에서 오르기 14/15 cm 성공률은 GRU 증류만 61.3/29.8%, GRU+TC 51.2/3.8%, GRU+JEPA 39.7/6.2%, no_memory 3.4/0.1%였다. 다음 비교는 같은 teacher 17000과 같은 depth-only 증류 조건에서 GRU 자리만 Mamba로 바꾼다. 이 수치는 현재 비교군의 결과이며 Mamba 성능에 대한 사전 주장은 하지 않는다.
