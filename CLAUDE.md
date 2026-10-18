@@ -183,6 +183,21 @@ Z790 사본: `logs/rsl_rl/teacher_v2/progress_model_19000.pt`.
 - **student 재증류:** teacher 17000 기반 student 결과(depth-only, propw5, Mamba, 연속 코스)는 기록으로 보관한다.
   졸업논문 비교는 19000 기반으로 다시 학습한다. 학습 설정은 기존 그대로다.
   17000 기반 복원 기준선 run은 시작 직후 중단했다.
+- **2026-10-18 비교 계획 (사용자 결정):**
+  - 주력 모델은 `mamba_jepa_propw5`다(Mamba backbone + proprio window 5 + JEPA, vf 0.05).
+  - 비교군은 주력과 변수 하나만 다르게 둔다. 모두 seed 43, 2048 env, 3000 iteration이며 pilab에서 2개씩 학습한다.
+
+    | 순서 | run | 다른 변수 |
+    |---|---|---|
+    | 1 | `mamba_jepa_propw5` | 주력 |
+    | 1 | `no_memory_propw5` | 기억 효과 |
+    | 2 | `mamba_recon_depth_propw5` | 목표 공간: 픽셀 예측 |
+    | 2 | `mamba_recon_height_propw5` | 목표: 명시적 높이맵 복원 |
+    | 3 | `mamba_propw5` | JEPA 효과 |
+    | 3 | `gru_jepa_propw5` | backbone |
+
+  - 위 "복원 기준선" 절의 GRU 복원 기준선은 Mamba backbone으로 대체한다. 판정 문구와 주 지표는 그대로 쓴다.
+    비교 상대는 `gru_jepa_propw5` 대신 `mamba_jepa_propw5`다.
 
 ### 2026-10-17 복원 기준선
 
