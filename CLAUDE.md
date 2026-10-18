@@ -164,6 +164,26 @@ task에는 보상 항 자체가 없다.
 
 teacher 교체는 결과 확인 뒤 결정한다.
 
+### 2026-10-18 졸업논문 고정 teacher 교체: v3 model_19000
+
+사용자 결정: 위 v3 실험의 `model_19000.pt`로 고정 teacher를 바꾼다. 위 "model_17000" 절을 대체한다.
+경로(pilab): `logs/rsl_rl/jepa_loco_oracle_current_progress/2026-10-17_22-09-28_progress_s42_from17000/model_19000.pt`.
+Z790 사본: `logs/rsl_rl/teacher_v2/progress_model_19000.pt`.
+
+- **판정:** 18000~20000 중 사전 기준 (1)~(4)를 모두 통과한 checkpoint는 19000 하나다.
+  상세는 `results/jepa_loco/teacher_v3/eval_summary.md`.
+  - seed 43 (17000 → 19000): 오르기 14/15 cm 70/47 → 98/92, 내리기 19/20 cm 27/3 → 100/100,
+    비정형 10/12 cm 92.2/66.4 → 87.5/61.7, 계단 낙상 0, 평지 100, 연속 코스 14 cm 53 → 100.
+  - seed 44에서도 계단 개선이 재현됐다(오르기 15 cm 82, 내리기 20 cm 100).
+    비정형 12 cm는 같은 seed 17000 대비 −5.5%p다. 낙상은 줄고 정지가 늘었다.
+  - 사용자가 play 영상(오르기 15, 내리기 20, 비정형 12, 평지, 코스 14 cm)으로 정상 보행을 확인했다.
+  - 대조군처럼 checkpoint 간 변동이 크다. 17000과 같이 **평가로 고른 checkpoint**다.
+- **latent 정규화 통계:** 19000으로 다시 계산한다(`results/jepa_loco/student/teacher_latent_stats_t19000.pt`,
+  `calibrate_student_teacher.py`의 기존 설정). 17000 통계는 재사용하지 않는다.
+- **student 재증류:** teacher 17000 기반 student 결과(depth-only, propw5, Mamba, 연속 코스)는 기록으로 보관한다.
+  졸업논문 비교는 19000 기반으로 다시 학습한다. 학습 설정은 기존 그대로다.
+  17000 기반 복원 기준선 run은 시작 직후 중단했다.
+
 ### 2026-10-17 복원 기준선
 
 졸업논문의 사각지대 기억 주장에서 잠재공간 예측과 복원의 차이를 검증한다.
