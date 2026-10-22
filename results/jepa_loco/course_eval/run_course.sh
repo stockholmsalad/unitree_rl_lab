@@ -9,6 +9,7 @@ names=(teacher gru gru_jepa_vf05 gru_jepa_propw5 gru_propw5 mamba)
 if (($#)); then selected=("$@"); else selected=("${names[@]}"); fi
 for name in "${selected[@]}"; do
   out="$DEST/${name}_course_s43.json"
+  stats=results/jepa_loco/student/teacher_latent_stats_t17000.pt
   if [[ -f "$out" ]]; then echo "skip existing $out"; continue; fi
   case "$name" in
     teacher)
@@ -24,6 +25,10 @@ for name in "${selected[@]}"; do
     mamba_jepa_propw5) checkpoint=logs/student/mamba_jepa_propw5_t17000_vf05_s43/model_3000.pt ;;
     gru_recon_depth_propw5) checkpoint=logs/student/gru_recon_depth_propw5_t17000_rvf05_s43/model_3000.pt ;;
     gru_recon_height_propw5) checkpoint=logs/student/gru_recon_height_propw5_t17000_s43/model_3000.pt ;;
+    t19000_*)
+      checkpoint=logs/student/${name#t19000_}/model_3000.pt
+      stats=results/jepa_loco/student/teacher_latent_stats_t19000.pt
+      ;;
     teacher_v3_*)
       checkpoint=logs/rsl_rl/teacher_v2/progress_model_${name##*_}.pt
       task=Unitree-Go2-JepaLoco-OracleCurrent-EasyStart
@@ -35,7 +40,7 @@ for name in "${selected[@]}"; do
   if [[ "$name" == teacher* ]]; then
     "$PYTHON_BIN" "$evaluator" --task "$task" --checkpoint "$checkpoint" --terrain course --course_step_heights_m 0.10 0.12 0.14 --envs_per_height 128 --seed 43 --output "$out" --headless > "$DEST/logs/${name}.log" 2>&1
   else
-    "$PYTHON_BIN" scripts/jepa_loco/eval_student_fixed.py --checkpoint "$checkpoint" --teacher_stats results/jepa_loco/student/teacher_latent_stats_t17000.pt --terrain course --course_step_heights_m 0.10 0.12 0.14 --envs_per_height 128 --seed 43 --output "$out" --headless > "$DEST/logs/${name}.log" 2>&1
+    "$PYTHON_BIN" scripts/jepa_loco/eval_student_fixed.py --checkpoint "$checkpoint" --teacher_stats "$stats" --terrain course --course_step_heights_m 0.10 0.12 0.14 --envs_per_height 128 --seed 43 --output "$out" --headless > "$DEST/logs/${name}.log" 2>&1
   fi
   echo "done $name: $out"
 done

@@ -64,7 +64,7 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     method = checkpoint["student_cfg"]["method"]
     iteration = checkpoint["iteration"]
-    if method not in ("no_memory", "gru", "gru_jepa", "gru_copy"):
+    if method not in ("no_memory", "gru", "gru_jepa", "gru_copy", "gru_recon_depth", "gru_recon_height"):
         raise ValueError(f"지원하지 않는 student method: {method}")
     stats_path = Path(args.teacher_stats or checkpoint["teacher_stats"])
     if not stats_path.exists():

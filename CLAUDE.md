@@ -199,6 +199,33 @@ Z790 사본: `logs/rsl_rl/teacher_v2/progress_model_19000.pt`.
   - 위 "복원 기준선" 절의 GRU 복원 기준선은 Mamba backbone으로 대체한다. 판정 문구와 주 지표는 그대로 쓴다.
     비교 상대는 `gru_jepa_propw5` 대신 `mamba_jepa_propw5`다.
 
+### 2026-10-22 JEPA target 변형과 seed 44 재현 (사용자 결정)
+
+teacher 19000 비교 7개(seed 43) 결과는 `results/jepa_loco/student/eval_t19000/summary.md`에 있다.
+- 기억 효과(mamba_propw5 대 no_memory, 오르기 14/15 cm +8.9/+14.3%p)만 사전 기준을 분명히 넘었다.
+- JEPA 효과는 backbone에 따라 방향이 반대다. 15 cm에서 Mamba는 −7.6%p, GRU는 +7.3%p였다.
+- 주력은 픽셀 복원보다 15 cm에서 7.3%p 낮다. 이 크기는 checkpoint 간 변동과 비슷하다.
+- 진단: 주력의 학습 z/action 손실은 비교군과 같거나 더 낮다. 평가 중 첫 단 근처 latent 오차와 성공률의 순서도 다르다.
+  따라서 "JEPA 손실이 증류와 경쟁한다"는 가설은 기각한다.
+
+**JEPA target 변형 (튜닝 1회, 결과 전 기록):**
+- `mamba_jepa_fe_propw5`: 주력과 `--jepa_target frame_embedding` 하나만 다르다. 근거는 두 가지다.
+  - Mamba context target에서는 분산 하한이 걸린 차원 비율이 약 0.17이었다.
+  - 미래 프레임을 목표로 하는 픽셀 복원이 높았다.
+- **2026-10-22 하한 보정 (사용자 결정):** `frame_embedding`에서는 `--jepa_variance_floor 1e-4`를 쓴다.
+  - 하한 0.05로 256 env·150 iteration 스모크를 돌리니 EMA CNN 임베딩 target 분산이 0.001~0.002였다. 모든 차원이 하한에 걸렸고(floor_frac 1.0), JEPA 손실이 0.02 수준으로 눌려 사실상 꺼졌다.
+  - 따라서 이 변형은 target과 하한 두 값이 원래 설정과 다르다. 하한을 실제 분산보다 낮게 두는 근거는 `recon_height`의 1e-4와 같다.
+- 공정성을 위해 복원 기준선에도 변형 1회를 준다. `mamba_recon_depth_lr03`은 `λ_R=0.03`이다.
+- 두 변형 모두 seed 43이다. 평가 구성과 판정 규칙(주 지표 오르기 14/15 cm의 2500·2800·3000 평균, 5%p)은 기존 그대로다.
+- 원래 설정과 변형 중 무엇을 고르든 시도한 설정을 모두 보고한다.
+- 변형이 원래 설정보다 5%p 이상 높을 때만 그 설정을 해당 방법의 대표로 쓴다. 이 경우 seed 44 재현이 필요하다.
+
+**seed 44 재현:**
+- `mamba_jepa_propw5`, `mamba_propw5`, `mamba_recon_depth`를 seed 44로 다시 학습한다.
+- 학습·평가 설정은 seed 43과 같다. 평가 seed는 43으로 유지한다.
+- 결론에는 두 seed의 평균과 각 seed 값을 함께 쓴다. 두 seed에서 방향이 다르면 "차이 없음"으로 기록한다.
+- 오르기 16~18 cm와 첫 단 근처 latent 오차는 사후 보조 지표로만 보고한다.
+
 ### 2026-10-17 복원 기준선
 
 졸업논문의 사각지대 기억 주장에서 잠재공간 예측과 복원의 차이를 검증한다.
