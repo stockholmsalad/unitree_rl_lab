@@ -1491,3 +1491,16 @@ Isaac 앱 내부 테스트는 **103개 통과**했다. 본 학습은 시작하�
   - 하한 0.05: target 분산 0.001~0.002, floor_frac 1.0, JEPA 손실 약 0.02로 사실상 꺼짐.
   - 하한 1e-4: target 분산 0.0012에서 0.0155로 증가, floor_frac 약 0.01, JEPA 손실 0.47, copy 대비 0.36, peak 3.7 GiB.
 - 표·checkpoint별 값: `results/jepa_loco/student/eval_t19000/summary.md`.
+
+## 2026-10-23~25 — seed 44 재현과 JEPA target 변형
+
+- seed 44 (평가 seed 43), 오르기 14/15 cm 세 checkpoint 평균:
+  - mamba_jepa_propw5 99.5/94.3, mamba_propw5 98.2/94.5
+  - JEPA 효과: seed 43 −1.9/−7.6, seed 44 +1.3/−0.2, 평균 −0.3/−3.9 → 차이 없음.
+  - 사후 16/17/18 cm 차이도 seed 43 −13.5/−11.5/−18.4, seed 44 +9.9/+12.2/+7.9로 뒤집혔다.
+  - 같은 설정의 seed 간 차이는 최대 22%p(주력 18 cm 36.5 → 58.9)다.
+- mamba_jepa_fe_propw5 (frame_embedding, vf 1e-4, seed 43):
+  - 오르기 14/15 cm 95.6/84.6으로 원래 설정 대비 −1.5/−5.2다. context target을 유지한다.
+  - 3000에서 하락했다(15 cm 91 → 76). 내리기·평지 100, 코스 14 cm 98.4.
+- no_memory_propw5 seed 44를 대기열에 추가했다(기억 효과 두 seed 판정용).
+- 표: `results/jepa_loco/student/eval_t19000/summary.md`.

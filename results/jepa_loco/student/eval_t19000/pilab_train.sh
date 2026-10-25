@@ -1,7 +1,7 @@
 #!/bin/bash
 # pilab: teacher 19000 student 학습. 사용법: [SEED=44] bash pilab_train.sh <run> [<run>]
 # run: mamba_jepa_propw5 | mamba_jepa_fe_propw5 | mamba_propw5 | mamba_recon_depth | mamba_recon_depth_lr03
-#      | mamba_recon_height | gru_jepa_propw5 | gru_propw5
+#      | mamba_recon_height | gru_jepa_propw5 | gru_propw5 | no_memory_propw5
 cd ~/workspaces/unitree_rl_lab
 SEED=${SEED:-43}
 T=logs/rsl_rl/jepa_loco_oracle_current_progress/2026-10-17_22-09-28_progress_s42_from17000/model_19000.pt
@@ -16,6 +16,7 @@ for r in "$@"; do
     mamba_recon_height) o=mamba_recon_height_propw5_t19000; a="--method gru_recon_height --backbone mamba" ;;
     gru_jepa_propw5) o=gru_jepa_propw5_t19000_vf05; a="--method gru_jepa --jepa_variance_floor 0.05" ;;
     gru_propw5) o=gru_propw5_t19000; a="--method gru" ;;
+    no_memory_propw5) o=no_memory_propw5_t19000; a="--method no_memory" ;;
     *) echo "unknown $r"; exit 2 ;;
   esac
   o=${o}_s$SEED; s=st_${r}_s$SEED

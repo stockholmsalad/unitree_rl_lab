@@ -225,6 +225,10 @@ teacher 19000 비교 7개(seed 43) 결과는 `results/jepa_loco/student/eval_t19
 - 학습·평가 설정은 seed 43과 같다. 평가 seed는 43으로 유지한다.
 - 결론에는 두 seed의 평균과 각 seed 값을 함께 쓴다. 두 seed에서 방향이 다르면 "차이 없음"으로 기록한다.
 - 오르기 16~18 cm와 첫 단 근처 latent 오차는 사후 보조 지표로만 보고한다.
+- **2026-10-25 추가 (사용자 결정):** `no_memory_propw5` seed 44를 학습한다. 기억 효과(mamba_propw5 대 no_memory)를 두 seed로 판정하기 위해서다.
+- **2026-10-25 결과:**
+  - seed 44에서 JEPA 효과(mamba_jepa 대 mamba_propw5)는 +1.3/−0.2였다. 두 seed 평균은 −0.3/−3.9로 **차이 없음**이다.
+  - `mamba_jepa_fe`(seed 43)는 원래 설정 대비 −1.5/−5.2였다. 사전 규칙에 따라 context target을 대표로 유지한다.
 
 ### 2026-10-17 복원 기준선
 
